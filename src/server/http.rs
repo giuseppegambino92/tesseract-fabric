@@ -48,7 +48,7 @@ use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const UI: &str = include_str!("ui.html");
@@ -201,6 +201,7 @@ pub struct ServerState {
     pub hot_join: Option<HotJoin>,
     pub replans: AtomicU64,
     pub security: HttpSecurity,
+    queue: SlotQueue,
     started: Instant,
     served: Mutex<(u64, u64)>,
 }
@@ -227,21 +228,81 @@ impl ServerState {
             hot_join: None,
             replans: AtomicU64::new(0),
             security: HttpSecurity::default(),
+            queue: SlotQueue::default(),
             started: Instant::now(),
             served: Mutex::new((0, 0)),
         }
     }
 
-    /// A free engine slot (waits while every slot is serving a request).
-    fn acquire(&self) -> (usize, MutexGuard<'_, Engine>) {
+    /// A free engine slot. Requests are served strictly in arrival order
+    /// (FIFO tickets); a waiting request sleeps on a condition variable that
+    /// is signalled whenever a slot is released, instead of polling.
+    fn acquire(&self) -> (usize, SlotGuard<'_>) {
+        let q = &self.queue;
+        let mut t = q.state.lock().unwrap_or_else(|e| e.into_inner());
+        let ticket = t.0;
+        t.0 += 1;
         loop {
-            for (i, s) in self.slots.iter().enumerate() {
-                if let Ok(g) = s.try_lock() {
-                    return (i, g);
+            if t.1 == ticket {
+                for (i, s) in self.slots.iter().enumerate() {
+                    if let Ok(g) = s.try_lock() {
+                        t.1 += 1; // the next ticket may now look for a slot
+                        q.cv.notify_all();
+                        return (
+                            i,
+                            SlotGuard {
+                                guard: Some(g),
+                                queue: q,
+                            },
+                        );
+                    }
                 }
             }
-            std::thread::sleep(Duration::from_millis(2));
+            // woken when a slot is released or the queue advances; the
+            // timeout only covers slots released without a signal (the
+            // membership watcher's short re-plans)
+            t =
+                q.cv.wait_timeout(t, Duration::from_millis(50))
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
         }
+    }
+}
+
+/// FIFO admission to engine slots: (next ticket to hand out, ticket now
+/// allowed to take a free slot).
+#[derive(Default)]
+struct SlotQueue {
+    state: Mutex<(u64, u64)>,
+    cv: Condvar,
+}
+
+/// An engine slot held by one request; releasing it wakes the queue.
+pub struct SlotGuard<'a> {
+    guard: Option<MutexGuard<'a, Engine>>,
+    queue: &'a SlotQueue,
+}
+
+impl std::ops::Deref for SlotGuard<'_> {
+    type Target = Engine;
+    fn deref(&self) -> &Engine {
+        self.guard.as_ref().unwrap()
+    }
+}
+
+impl std::ops::DerefMut for SlotGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Engine {
+        self.guard.as_mut().unwrap()
+    }
+}
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        // take the queue lock so a waiter cannot miss the signal between its
+        // check and its wait
+        let _q = self.queue.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.queue.cv.notify_all();
     }
 }
 

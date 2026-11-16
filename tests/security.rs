@@ -234,3 +234,41 @@ fn node_endpoints_drop_connections_that_skip_the_handshake() {
         .expect("authenticated frame");
     assert_eq!(got.payload, vec![9]);
 }
+
+#[test]
+fn requests_waiting_for_a_slot_are_served_in_arrival_order() {
+    // one engine slot: requests queue for it and must be served FIFO
+    // (~0.4 s per request on the tiny model, sent 30 ms apart: requests 1–5
+    // all queue behind request 0, so the order is decided by the queue)
+    let srv = serve(&["--slots", "1", "--max-tokens", "1024"]);
+    let a = srv.1.clone();
+    let done = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut hs = Vec::new();
+    for i in 0..6usize {
+        let (a, done) = (a.clone(), done.clone());
+        hs.push(std::thread::spawn(move || {
+            let body = format!(
+                r#"{{"messages":[{{"role":"user","content":"request {i}"}}],"max_tokens":1024,"temperature":0}}"#
+            );
+            let r = raw(
+                &a,
+                &format!(
+                    "POST /v1/chat/completions HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                ),
+            );
+            assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+            done.lock().unwrap().push(i);
+        }));
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    for h in hs {
+        h.join().unwrap();
+    }
+    let order = done.lock().unwrap().clone();
+    assert_eq!(
+        order,
+        (0..6).collect::<Vec<_>>(),
+        "not served in arrival order"
+    );
+}

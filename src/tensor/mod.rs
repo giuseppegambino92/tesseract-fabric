@@ -169,7 +169,15 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
         // SAFETY: both slices have the same length; all loads stay in bounds.
         unsafe { neon::dot(a, b) }
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    {
+        if x86::has_avx2_fma() {
+            // SAFETY: AVX2 + FMA checked at runtime; equal lengths.
+            return unsafe { x86::dot(a, b) };
+        }
+        dot_portable(a, b)
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         dot_portable(a, b)
     }
@@ -756,6 +764,14 @@ pub fn matmul_tiled_batch(x: &Tensor2D, w: &Tensor2D, y: &mut Tensor2D) {
             };
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    if x86::has_avx2_fma() {
+        let mut i = 0;
+        while i < m {
+            i += x86_tiles(x, &w.data, n, &mut y.data, i);
+        }
+        return;
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         let mut i = 0;
@@ -801,6 +817,14 @@ pub fn matmul_rows(x: &Tensor2D, w_rows: &[f32], n_rows: usize, y: &mut [f32]) {
             };
         }
     }
+    #[cfg(target_arch = "x86_64")]
+    if x86::has_avx2_fma() {
+        let mut i = 0;
+        while i < m {
+            i += x86_tiles(x, w_rows, n_rows, y, i);
+        }
+        return;
+    }
     #[cfg(not(target_arch = "aarch64"))]
     {
         for i in 0..m {
@@ -808,6 +832,158 @@ pub fn matmul_rows(x: &Tensor2D, w_rows: &[f32], n_rows: usize, y: &mut [f32]) {
                 y[i * n_rows + j] = dot(x.row(i), &w_rows[j * k..(j + 1) * k]);
             }
         }
+    }
+}
+
+/// One AVX2 tile step at row `i0`: picks the tile shape for the rows left
+/// (16 ymm registers: R·C accumulators + C weight vectors + 1 input vector)
+/// and returns the rows consumed.
+#[cfg(target_arch = "x86_64")]
+fn x86_tiles(x: &Tensor2D, w: &[f32], n: usize, y: &mut [f32], i0: usize) -> usize {
+    match x.rows - i0 {
+        r if r >= 7 => x86_tile_block::<4, 3>(x, w, n, y, i0),
+        5..=6 => x86_tile_block::<6, 2>(x, w, n, y, i0),
+        3..=4 => x86_tile_block::<4, 3>(x, w, n, y, i0),
+        2 => x86_tile_block::<2, 4>(x, w, n, y, i0),
+        _ => x86_tile_block::<1, 4>(x, w, n, y, i0),
+    }
+}
+
+/// R token rows × C weight rows of `y = x · wᵀ` with AVX2 tiles (zero-pads
+/// missing rows); returns the real rows consumed.
+#[cfg(target_arch = "x86_64")]
+fn x86_tile_block<const R: usize, const C: usize>(
+    x: &Tensor2D,
+    w: &[f32],
+    n: usize,
+    y: &mut [f32],
+    i0: usize,
+) -> usize {
+    let (m, k) = (x.rows, x.cols);
+    let r = (m - i0).min(R);
+    let padded;
+    let xs: &[f32] = if r == R {
+        &x.data[i0 * k..(i0 + R) * k]
+    } else {
+        let mut p = vec![0.0f32; R * k];
+        p[..r * k].copy_from_slice(&x.data[i0 * k..(i0 + r) * k]);
+        padded = p;
+        &padded
+    };
+    let xr: [*const f32; R] = std::array::from_fn(|a| xs[a * k..].as_ptr());
+    let mut j = 0;
+    while j + C <= n {
+        let wr: [*const f32; C] = std::array::from_fn(|b| w[(j + b) * k..].as_ptr());
+        // SAFETY: AVX2 + FMA were checked by the caller; every pointer
+        // addresses a full row of k floats.
+        let o = unsafe { x86::tile::<R, C>(xr, wr, k) };
+        for a in 0..r {
+            y[(i0 + a) * n + j..(i0 + a) * n + j + C].copy_from_slice(&o[a]);
+        }
+        j += C;
+    }
+    while j < n {
+        let wrow = &w[j * k..(j + 1) * k];
+        for a in 0..r {
+            y[(i0 + a) * n + j] = dot(&xs[a * k..(a + 1) * k], wrow);
+        }
+        j += 1;
+    }
+    r
+}
+
+#[cfg(target_arch = "x86_64")]
+mod x86 {
+    use std::arch::x86_64::*;
+
+    /// AVX2 and FMA available on this CPU (checked once).
+    pub fn has_avx2_fma() -> bool {
+        static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *F.get_or_init(|| is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma"))
+    }
+
+    #[inline(always)]
+    unsafe fn hsum(v: __m256) -> f32 {
+        let q = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+        let d = _mm_add_ps(q, _mm_movehl_ps(q, q));
+        _mm_cvtss_f32(_mm_add_ss(d, _mm_shuffle_ps(d, d, 1)))
+    }
+
+    /// AVX2 dot product with four independent FMA chains.
+    ///
+    /// # Safety
+    /// AVX2 + FMA must be available; `a` and `b` must have equal length.
+    #[target_feature(enable = "avx2,fma")]
+    pub unsafe fn dot(a: &[f32], b: &[f32]) -> f32 {
+        let k = a.len();
+        let (pa, pb) = (a.as_ptr(), b.as_ptr());
+        let mut acc = [_mm256_setzero_ps(); 4];
+        let mut c = 0;
+        while c + 32 <= k {
+            for (u, s) in acc.iter_mut().enumerate() {
+                let o = c + 8 * u;
+                *s = _mm256_fmadd_ps(_mm256_loadu_ps(pa.add(o)), _mm256_loadu_ps(pb.add(o)), *s);
+            }
+            c += 32;
+        }
+        while c + 8 <= k {
+            acc[0] = _mm256_fmadd_ps(
+                _mm256_loadu_ps(pa.add(c)),
+                _mm256_loadu_ps(pb.add(c)),
+                acc[0],
+            );
+            c += 8;
+        }
+        let mut s = hsum(_mm256_add_ps(
+            _mm256_add_ps(acc[0], acc[1]),
+            _mm256_add_ps(acc[2], acc[3]),
+        ));
+        while c < k {
+            s += a[c] * b[c];
+            c += 1;
+        }
+        s
+    }
+
+    /// R token rows × C weight rows register tile over the full k dimension.
+    ///
+    /// # Safety
+    /// AVX2 + FMA must be available; every pointer must address at least `k`
+    /// readable floats.
+    #[target_feature(enable = "avx2,fma")]
+    pub unsafe fn tile<const R: usize, const C: usize>(
+        x: [*const f32; R],
+        w: [*const f32; C],
+        k: usize,
+    ) -> [[f32; C]; R] {
+        let mut acc = [[_mm256_setzero_ps(); C]; R];
+        let mut c = 0;
+        while c + 8 <= k {
+            let mut wv = [_mm256_setzero_ps(); C];
+            for b in 0..C {
+                wv[b] = _mm256_loadu_ps(w[b].add(c));
+            }
+            for a in 0..R {
+                let xv = _mm256_loadu_ps(x[a].add(c));
+                for b in 0..C {
+                    acc[a][b] = _mm256_fmadd_ps(xv, wv[b], acc[a][b]);
+                }
+            }
+            c += 8;
+        }
+        let mut o = [[0.0; C]; R];
+        for a in 0..R {
+            for b in 0..C {
+                let mut s = hsum(acc[a][b]);
+                let mut t = c;
+                while t < k {
+                    s += *x[a].add(t) * *w[b].add(t);
+                    t += 1;
+                }
+                o[a][b] = s;
+            }
+        }
+        o
     }
 }
 
