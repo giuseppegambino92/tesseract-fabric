@@ -726,7 +726,7 @@ fn tiled_batch_gemm_amortizes_weight_loads() {
     // (measured 7.1× for B=6 on an x86_64 CI runner). That gap is a known
     // limitation (README), not hidden here: the ratios are printed above on
     // every target and asserted where the tiled kernel exists.
-    if cfg!(target_arch = "aarch64") {
+    if cfg!(target_arch = "aarch64") && std::env::var_os("TESSERACT_SKIP_PERF_ASSERTS").is_none() {
         assert!(t6 / t1 < 3.0, "B=6 ratio {}", t6 / t1);
         assert!(t8 / t1 < 4.0, "B=8 ratio {}", t8 / t1);
     }

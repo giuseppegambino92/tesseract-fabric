@@ -49,4 +49,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
+        # correctness is asserted everywhere; speed thresholds (calibrated on
+        # an Apple M3 Max) only print their measurements on shared runners
+        env:
+          TESSERACT_SKIP_PERF_ASSERTS: "1"
         run: cargo test --release --no-fail-fast

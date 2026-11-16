@@ -31,7 +31,11 @@ fn serve(extra: &[&str]) -> Server {
         ])
         .args(extra)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(if std::env::var_os("CI").is_some() {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
         .spawn()
         .unwrap();
     let mut line = String::new();

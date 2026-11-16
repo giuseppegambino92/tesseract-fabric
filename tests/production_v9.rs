@@ -613,7 +613,12 @@ fn serve(args: &[&str]) -> (Child, String, std::net::SocketAddr) {
         .args(["--http", "127.0.0.1:0"])
         .args(args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(if std::env::var_os("CI").is_some() {
+            // on CI the server's own log goes to the job log (crash diagnosis)
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        })
         .spawn()
         .unwrap();
     let mut out = BufReader::new(c.stdout.take().unwrap());

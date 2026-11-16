@@ -39,6 +39,13 @@ fn repo(file: &str) -> &'static str {
 
 static DOWNLOAD: Mutex<()> = Mutex::new(());
 
+/// Speed thresholds are asserted unless `TESSERACT_SKIP_PERF_ASSERTS` is
+/// set (CI does: shared runners measure the VM, not the code). The measured
+/// values are printed either way.
+fn perf_asserts() -> bool {
+    std::env::var_os("TESSERACT_SKIP_PERF_ASSERTS").is_none()
+}
+
 /// The tests here measure throughput: run them one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -342,7 +349,9 @@ fn continuous_batching_serves_concurrent_requests_exactly() {
         );
     }
     eprintln!("4 requests × {n} tokens: sequential {seq:.2} s, batched {conc:.2} s ({:.2}× aggregate throughput)", seq / conc);
-    assert!(seq / conc > 1.5, "batching gave {:.2}×", seq / conc);
+    if perf_asserts() {
+        assert!(seq / conc > 1.5, "batching gave {:.2}×", seq / conc);
+    }
 }
 
 /// A 2-stage pipeline whose committed KV lives on remote holders (a third,
@@ -450,7 +459,12 @@ fn serve(args: &[&str]) -> (Child, String) {
         .args(["--http", "127.0.0.1:0"])
         .args(args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(if std::env::var_os("CI").is_some() {
+            // on CI the server's own log goes to the job log (crash diagnosis)
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        })
         .spawn()
         .unwrap();
     let mut out = BufReader::new(c.stdout.take().unwrap());
@@ -602,7 +616,7 @@ fn k_quant_kernels_reach_the_q8_class() {
     for fmt in [WeightFormat::Q4_K, WeightFormat::Q6_K, WeightFormat::Q5_0] {
         let r = rate(fmt);
         eprintln!("{}: {r:.1} GMAC/s at one row (Q8_0 {q8:.1})", fmt.name());
-        if best_kernel() != DotKernel::Scalar {
+        if best_kernel() != DotKernel::Scalar && perf_asserts() {
             // K-quants stay in the Q8_0 class (within ~25% or better) on
             // every SIMD target; the absolute V10 target (≥ 13.5 GMAC/s on
             // one thread) was set on Apple Silicon and is checked there only,

@@ -612,7 +612,12 @@ fn openai_http_sse_streaming_e2e() {
             "4",
         ])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(if std::env::var_os("CI").is_some() {
+            // on CI the server's own log goes to the job log (crash diagnosis)
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        })
         .spawn()
         .unwrap();
     let mut child = Child(child);

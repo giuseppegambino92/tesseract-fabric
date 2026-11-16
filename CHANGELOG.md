@@ -15,6 +15,7 @@
 - 10 new tests (`tests/security.rs`, wire-handshake and memory unit tests): 110 in total.
 - The shaper unit test now checks the shaper's own accounting instead of wall time (it failed on a busy GitHub macOS runner that overslept a 15 ms sleep by 50 ms).
 - CI can be started by hand (`workflow_dispatch`).
+- CI asserts every correctness property and prints, without asserting, the speed thresholds calibrated on Apple Silicon (`TESSERACT_SKIP_PERF_ASSERTS=1`): on shared runners they flipped between runs (batching 1.49× vs 1.5×, Q5_0 0.756× vs 0.75× of Q8_0). On CI the servers started by tests log to the job output.
 - First native Linux x86_64 CI run: every correctness test passes. Two speed thresholds calibrated on Apple Silicon are now asserted on aarch64 only, with their values printed everywhere: the absolute K-quant floor (the relative K-quant vs Q8_0 check stays on every target), and the tiled f32 batch amortization. The latter exposed a real gap, now listed under known limits.
 - `LICENSE` (Apache-2.0, as declared in `Cargo.toml`).
 
