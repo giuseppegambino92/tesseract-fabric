@@ -81,13 +81,25 @@ button:disabled { opacity: .5; cursor: default; }
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
+// API key (servers started with --api-key): open the page as /#key=KEY; the
+// key is kept for this tab only and removed from the address bar
+const hashKey = new URLSearchParams(location.hash.slice(1)).get("key");
+if (hashKey) {
+  try { sessionStorage.setItem("tess-key", hashKey); } catch (e) {}
+  history.replaceState(null, "", location.pathname + location.search);
+}
+let apiKey = hashKey;
+try { apiKey = apiKey || sessionStorage.getItem("tess-key"); } catch (e) {}
+const authHeaders = (h = {}) => apiKey ? { ...h, Authorization: `Bearer ${apiKey}` } : h;
 const fmtB = (b) => b >= 1 << 30 ? (b / (1 << 30)).toFixed(2) + " GB" : b >= 1 << 20 ? (b / (1 << 20)).toFixed(1) + " MB" : (b / 1024).toFixed(1) + " KB";
 function kv(el, rows) { el.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join(""); }
 function esc(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 
 async function refresh() {
   try {
-    const s = await (await fetch("/v1/cluster/status")).json();
+    const res = await fetch("/v1/cluster/status", { headers: authHeaders() });
+    if (res.status === 401) { $("engine").textContent = "API key required: open this page as /#key=YOUR_KEY"; return; }
+    const s = await res.json();
     $("engine").textContent = `${s.engine} · ${s.model} · KV ${s.kv_mode}`;
     const maxW = Math.max(1, ...s.nodes.map((n) => n.weight_bytes + n.kv_bytes));
     $("nodes").innerHTML = s.nodes.map((n) => {
@@ -120,7 +132,8 @@ $("f").addEventListener("submit", async (ev) => {
   const body = { model: "tesseract", stream: true, messages: [{ role: "user", content: q }],
     max_tokens: +$("mt").value, temperature: +$("tp").value, top_p: +$("pp").value };
   try {
-    const r = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch("/v1/chat/completions", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
+    if (r.status === 401) { out.textContent = "API key required: open this page as /#key=YOUR_KEY"; $("go").disabled = false; return; }
     const rd = r.body.getReader();
     const td = new TextDecoder();
     let buf = "";

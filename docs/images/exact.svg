@@ -1,0 +1,92 @@
+<svg class="rich-terminal" viewBox="0 0 1482 269.6" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .terminal-3219094022-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .terminal-3219094022-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .terminal-3219094022-r1 { fill: #98a84b;font-weight: bold }
+.terminal-3219094022-r2 { fill: #c5c8c6 }
+.terminal-3219094022-r3 { fill: #868887 }
+    </style>
+
+    <defs>
+    <clipPath id="terminal-3219094022-clip-terminal">
+      <rect x="0" y="0" width="1463.0" height="218.6" />
+    </clipPath>
+    <clipPath id="terminal-3219094022-line-0">
+    <rect x="0" y="1.5" width="1464" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3219094022-line-1">
+    <rect x="0" y="25.9" width="1464" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3219094022-line-2">
+    <rect x="0" y="50.3" width="1464" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3219094022-line-3">
+    <rect x="0" y="74.7" width="1464" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3219094022-line-4">
+    <rect x="0" y="99.1" width="1464" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3219094022-line-5">
+    <rect x="0" y="123.5" width="1464" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3219094022-line-6">
+    <rect x="0" y="147.9" width="1464" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3219094022-line-7">
+    <rect x="0" y="172.3" width="1464" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1480" height="267.6" rx="8"/><text class="terminal-3219094022-title" fill="#c5c8c6" text-anchor="middle" x="740" y="27">4-rank&#160;H-TEP&#160;vs&#160;a&#160;single&#160;node</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#terminal-3219094022-clip-terminal)">
+    
+    <g class="terminal-3219094022-matrix">
+    <text class="terminal-3219094022-r1" x="0" y="20" textLength="24.4" clip-path="url(#terminal-3219094022-line-0)">$&#160;</text><text class="terminal-3219094022-r1" x="24.4" y="20" textLength="890.6" clip-path="url(#terminal-3219094022-line-0)">cargo&#160;test&#160;--release&#160;--test&#160;production_v10&#160;htep_reproduces&#160;--&#160;--nocapture</text><text class="terminal-3219094022-r2" x="1464" y="20" textLength="12.2" clip-path="url(#terminal-3219094022-line-0)">
+</text><text class="terminal-3219094022-r3" x="0" y="44.4" textLength="292.8" clip-path="url(#terminal-3219094022-line-1)">…&#160;(build&#160;output&#160;trimmed)</text><text class="terminal-3219094022-r2" x="1464" y="44.4" textLength="12.2" clip-path="url(#terminal-3219094022-line-1)">
+</text><text class="terminal-3219094022-r2" x="0" y="68.8" textLength="1122.4" clip-path="url(#terminal-3219094022-line-2)">SmolLM2-135M-Instruct-Q8_0.gguf:&#160;H-TEP×4&#160;40/40&#160;tokens&#160;identical,&#160;40&#160;logit&#160;rows&#160;bit-identical</text><text class="terminal-3219094022-r2" x="1464" y="68.8" textLength="12.2" clip-path="url(#terminal-3219094022-line-2)">
+</text><text class="terminal-3219094022-r2" x="0" y="93.2" textLength="1146.8" clip-path="url(#terminal-3219094022-line-3)">SmolLM2-135M-Instruct-Q4_K_M.gguf:&#160;H-TEP×4&#160;40/40&#160;tokens&#160;identical,&#160;40&#160;logit&#160;rows&#160;bit-identical</text><text class="terminal-3219094022-r2" x="1464" y="93.2" textLength="12.2" clip-path="url(#terminal-3219094022-line-3)">
+</text><text class="terminal-3219094022-r2" x="0" y="117.6" textLength="1146.8" clip-path="url(#terminal-3219094022-line-4)">qwen2.5-0.5b-instruct-q4_k_m.gguf:&#160;H-TEP×4&#160;40/40&#160;tokens&#160;identical,&#160;40&#160;logit&#160;rows&#160;bit-identical</text><text class="terminal-3219094022-r2" x="1464" y="117.6" textLength="12.2" clip-path="url(#terminal-3219094022-line-4)">
+</text><text class="terminal-3219094022-r2" x="0" y="142" textLength="1012.6" clip-path="url(#terminal-3219094022-line-5)">Qwen3-0.6B-Q4_K_M.gguf:&#160;H-TEP×4&#160;40/40&#160;tokens&#160;identical,&#160;40&#160;logit&#160;rows&#160;bit-identical</text><text class="terminal-3219094022-r2" x="1464" y="142" textLength="12.2" clip-path="url(#terminal-3219094022-line-5)">
+</text><text class="terminal-3219094022-r2" x="0" y="166.4" textLength="1146.8" clip-path="url(#terminal-3219094022-line-6)">Llama-3.2-1B-Instruct-Q4_K_M.gguf:&#160;H-TEP×4&#160;40/40&#160;tokens&#160;identical,&#160;40&#160;logit&#160;rows&#160;bit-identical</text><text class="terminal-3219094022-r2" x="1464" y="166.4" textLength="12.2" clip-path="url(#terminal-3219094022-line-6)">
+</text><text class="terminal-3219094022-r2" x="0" y="190.8" textLength="671" clip-path="url(#terminal-3219094022-line-7)">test&#160;htep_reproduces_the_single_node_bit_for_bit&#160;...&#160;ok</text><text class="terminal-3219094022-r2" x="1464" y="190.8" textLength="12.2" clip-path="url(#terminal-3219094022-line-7)">
+</text><text class="terminal-3219094022-r2" x="0" y="215.2" textLength="1146.8" clip-path="url(#terminal-3219094022-line-8)">test&#160;result:&#160;ok.&#160;1&#160;passed;&#160;0&#160;failed;&#160;0&#160;ignored;&#160;0&#160;measured;&#160;5&#160;filtered&#160;out;&#160;finished&#160;in&#160;31.84s</text><text class="terminal-3219094022-r2" x="1464" y="215.2" textLength="12.2" clip-path="url(#terminal-3219094022-line-8)">
+</text>
+    </g>
+    </g>
+</svg>

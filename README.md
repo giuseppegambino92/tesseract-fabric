@@ -1,6 +1,17 @@
 # Tesseract-Fabric 🚀
 ### Pure-Rust Distributed AI Inference Engine (v1.0.0)
 
+<p>
+  <a href="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-orange?logo=rust">
+  <img alt="External crates" src="https://img.shields.io/badge/external%20crates-0-success">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-110%20passing-brightgreen">
+  <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%7C%20Linux-supported-555">
+  <img alt="SIMD" src="https://img.shields.io/badge/SIMD-NEON%20%7C%20AVX2-7c3aed">
+  <img alt="API" src="https://img.shields.io/badge/API-OpenAI--compatible-412991">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+</p>
+
 [English](#english) | [Italiano](#italiano)
 
 <a href="https://paypal.me/giuseppegambino92"><img src="https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif" alt="Donate with PayPal"></a>
@@ -10,7 +21,10 @@
 <a name="english"></a>
 ## 🇬🇧 English Documentation
 
-`tesseract-fabric` is a pure-Rust distributed inference runtime with **zero external crates**. It runs transformer LLMs across heterogeneous clusters (Apple Silicon Macs, Linux workstations, ARM64 devices) over real TCP sockets. A 4-rank H-TEP cluster reproduces a single node **bit for bit** on five real GGUF checkpoints. v1.0.0 passes 100 tests with `cargo fmt --check` and `cargo clippy -D warnings` clean.
+`tesseract-fabric` is a pure-Rust distributed inference runtime with **zero external crates**. It runs transformer LLMs across heterogeneous clusters (Apple Silicon Macs, Linux workstations, ARM64 devices) over real TCP sockets. A 4-rank H-TEP cluster reproduces a single node **bit for bit** on five real GGUF checkpoints. It passes 110 tests with `cargo fmt --check` and `cargo clippy -D warnings` clean.
+
+![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-light.svg#gh-light-mode-only)
+![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-dark.svg#gh-dark-mode-only)
 
 ### 🌟 Key Architectural Pillars
 1. **H-TEP (Hybrid Tensor-Expert Parallelism)**: low-latency peers form one group.
@@ -38,12 +52,33 @@ No hand-written topology is needed (`src/cluster/discovery.rs`):
 
 ---
 
+### 🎬 See it run
+Real runs, recorded by `scripts/make_screenshots.py` (nothing is staged; the commands shown are the ones executed).
+
+**Chat with Llama 3.2 1B on an in-process 4-node cluster.** The speed shown (20.7 tok/s) was recorded while an Android emulator kept ten cores busy; on a quiet M3 Max the same command runs at ≈ 41 tok/s.
+
+![tesseract-node --role chat on Llama-3.2-1B](docs/images/chat.svg)
+
+**Exact distributed inference.** A 4-rank H-TEP cluster reproduces a single node token for token and logit for logit on five real checkpoints.
+
+![H-TEP x4 matches a single node bit for bit on five checkpoints](docs/images/exact.svg)
+
+**OpenAI-compatible server with an API key and continuous batching**, queried with `curl`: a request without the key is refused, the reply carries `tesseract_telemetry`, and `/v1/cluster/status` shows the roles the solver assigned.
+
+![tesseract-serve with API key, curl requests and cluster status](docs/images/server.svg)
+
+**Web dashboard** (`http://127.0.0.1:8080/#key=<KEY>`): nodes, roles, probed links, memory and a streaming chat playground.
+
+<img src="docs/images/dashboard.png" alt="tesseract-fabric web dashboard: cluster nodes and chat playground" width="100%">
+
+---
+
 ### 📦 Quick Start & Usage
 
 #### 1. Compile and test
 ```bash
 cargo build --release
-cargo test --release      # 100 tests; the first run downloads ≈ 2.9 GB of public GGUF checkpoints into models/
+cargo test --release      # 110 tests; the first run downloads ≈ 2.9 GB of public GGUF checkpoints into models/
 ```
 
 #### 2. Chat with a real checkpoint on an in-process 4-node cluster
@@ -55,9 +90,10 @@ cargo run --release --bin tesseract-node -- --role chat \
 
 #### 3. OpenAI-compatible server with continuous batching (dashboard at http://127.0.0.1:8080)
 ```bash
+export TESSERACT_API_KEY=$(openssl rand -hex 16)   # optional on loopback, required beyond it
 cargo run --release --bin tesseract-serve -- \
     --model models/qwen2.5-0.5b-instruct-q4_k_m.gguf --local-nodes 2 --sessions 8
-curl -N http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
+curl -N http://127.0.0.1:8080/v1/chat/completions -H "Authorization: Bearer $TESSERACT_API_KEY" \
     -d '{"messages":[{"role":"user","content":"Hello!"}],"stream":true}'
 ```
 
@@ -68,9 +104,9 @@ tesseract-node --role worker --id 0 --listen 0.0.0.0:7000 --discover --cluster-s
 # a Tailscale peer: point it at the coordinator's 100.x address
 tesseract-node --role worker --id 3 --listen 0.0.0.0:7000 --discover --cluster-secret s3cret --seeds 100.101.102.103:49777
 # coordinator: wait for 4 workers, probe, solve, assign, serve
-tesseract-serve --discover 4 --cluster-secret s3cret --model model.gguf --http 0.0.0.0:8080
+tesseract-serve --discover 4 --cluster-secret s3cret --model model.gguf --http 0.0.0.0:8080 --api-key "$TESSERACT_API_KEY"
 ```
-Add `--lan-broadcast` on a trusted LAN to find peers without seeds.
+Add `--lan-broadcast` on a trusted LAN to find peers without seeds. Open the dashboard as `http://host:8080/#key=<KEY>`.
 
 #### 5. Benchmarks
 ```bash
@@ -79,8 +115,40 @@ cargo run --release --bin tesseract-bench -- --quick   # shorter run
 ```
 Benchmark clusters emulate every node as threads on one host, with link shaping and compute slowdowns derived from device profiles. Results depend on the host's load and clock regime, as described in the v1.0.0 section.
 
-### 📊 v1.0.0 Release Status
-- **100/100 tests**, zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
+
+<details open>
+<summary><b>Measured performance</b> (Apple M3 Max; figures and their sources: <code>scripts/make_figures.py</code>)</summary>
+
+![Kernel throughput per format, V9 vs v1.0](docs/images/kernels-light.svg#gh-light-mode-only)
+![Kernel throughput per format, V9 vs v1.0](docs/images/kernels-dark.svg#gh-dark-mode-only)
+
+| GMAC/s, one thread, one row | Q8_0 | Q4_0 | Q5_0 | Q4_K | Q6_K |
+|---|---:|---:|---:|---:|---:|
+| V9.0 | 14.7 | 15.2 | 13.0 | 10.5 | 12.4 |
+| v1.0 | 26.4 | 25.1 | 20.7 | 30.0 | 24.9 |
+
+![Single-node decode speedup per checkpoint](docs/images/decode-light.svg#gh-light-mode-only)
+![Single-node decode speedup per checkpoint](docs/images/decode-dark.svg#gh-dark-mode-only)
+
+![Continuous batching aggregate throughput](docs/images/batching-light.svg#gh-light-mode-only)
+![Continuous batching aggregate throughput](docs/images/batching-dark.svg#gh-dark-mode-only)
+
+| Concurrent requests | 1 | 2 | 4 | 8 |
+|---|---:|---:|---:|---:|
+| Aggregate tok/s (Qwen2.5-0.5B, 2 H-TEP ranks) | 73.2 | 90.8 | 117.6 | 125.0 |
+
+</details>
+
+### 🔒 Security model
+- **HTTP API**: `--api-key KEY` (or `TESSERACT_API_KEY`) requires `Authorization: Bearer KEY` on every `/v1/*` endpoint (constant-time check). `tesseract-serve` **refuses to listen beyond loopback without a key** unless you pass `--no-auth` on purpose.
+- **CORS** is off unless `--cors-origin https://your.app` names the one origin to allow.
+- **Request limits**, enforced while bytes arrive: 64 KB head, 100 header lines, 8 MB body, no chunked bodies. Connections are capped at 64 (`--max-connections`) and 16 per client IP (`--max-per-client`); excess connections get an immediate `503`.
+- **TLS**: put a reverse proxy in front, e.g. Caddy: `your.host { reverse_proxy 127.0.0.1:8080 }` (SSE streams through).
+- **Node traffic**: `--cluster-secret` authenticates discovery beacons *and* every node-to-node TCP connection: a mutual challenge-response with fresh nonces and a 128-bit SipHash-2-4 MAC, so a host without the secret cannot connect or inject frames. Frames are **not encrypted**: on networks you do not trust, run the cluster over WireGuard / Tailscale. The default secret is public; always set your own beyond loopback.
+- **Resource reporting**: nodes advertise memory *available now* (Linux `MemAvailable`; macOS computed like Activity Monitor), not installed RAM.
+
+### 📊 Status
+- **110/110 tests** (100 at v1.0.0, plus the security hardening since), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
 - **Exact distributed inference**: 4-rank H-TEP matches a single node on 40/40 tokens and 40/40 logit rows for SmolLM2, Qwen2.5, Qwen3 and Llama 3.2 (dense models; MoE expert routing is not covered by the exactness guarantee).
 - **Benchmark scorecard**: 14/15 and 13/15 in the two final back-to-back runs.
   - Scenario 2 row 9 (speculation beating its own ablation on a heterogeneous cluster) reaches parity, 0.99–1.00×, at full host speed. This is the documented limit: the stage-0 cross-step lookahead, which the ablation also uses, already captures most of the speculative gain.
@@ -92,7 +160,10 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 <a name="italiano"></a>
 ## 🇮🇹 Documentazione in Italiano
 
-`tesseract-fabric` è un runtime di inferenza distribuita in puro Rust, **senza alcun crate esterno**. Esegue LLM transformer su cluster eterogenei (Mac Apple Silicon, workstation Linux, dispositivi ARM64) tramite socket TCP reali. Un cluster H-TEP a 4 rank riproduce **bit per bit** un singolo nodo su cinque checkpoint GGUF reali. La v1.0.0 passa 100 test, con `cargo fmt --check` e `cargo clippy -D warnings` puliti.
+`tesseract-fabric` è un runtime di inferenza distribuita in puro Rust, **senza alcun crate esterno**. Esegue LLM transformer su cluster eterogenei (Mac Apple Silicon, workstation Linux, dispositivi ARM64) tramite socket TCP reali. Un cluster H-TEP a 4 rank riproduce **bit per bit** un singolo nodo su cinque checkpoint GGUF reali. Passa 110 test, con `cargo fmt --check` e `cargo clippy -D warnings` puliti.
+
+![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-light.svg#gh-light-mode-only)
+![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-dark.svg#gh-dark-mode-only)
 
 ### 🌟 Pilastri architetturali
 1. **H-TEP (parallelismo ibrido tensor-expert)**: i peer a bassa latenza formano un gruppo.
@@ -120,12 +191,33 @@ Non serve scrivere a mano la topologia (`src/cluster/discovery.rs`):
 
 ---
 
+### 🎬 Guardalo in azione
+Esecuzioni reali, registrate da `scripts/make_screenshots.py` (niente di simulato: i comandi mostrati sono quelli eseguiti).
+
+**Chat con Llama 3.2 1B su un cluster di 4 nodi in-process.** La velocità mostrata (20,7 tok/s) è stata registrata mentre un emulatore Android teneva occupati dieci core; su un M3 Max scarico lo stesso comando gira a ≈ 41 tok/s.
+
+![tesseract-node --role chat su Llama-3.2-1B](docs/images/chat.svg)
+
+**Inferenza distribuita esatta.** Un cluster H-TEP a 4 rank riproduce un singolo nodo token per token e logit per logit su cinque checkpoint reali.
+
+![H-TEP x4 coincide bit per bit con un singolo nodo su cinque checkpoint](docs/images/exact.svg)
+
+**Server compatibile OpenAI con chiave API e continuous batching**, interrogato con `curl`: una richiesta senza chiave viene rifiutata, la risposta contiene `tesseract_telemetry`, e `/v1/cluster/status` mostra i ruoli assegnati dal solver.
+
+![tesseract-serve con chiave API, richieste curl e stato del cluster](docs/images/server.svg)
+
+**Dashboard web** (`http://127.0.0.1:8080/#key=<CHIAVE>`): nodi, ruoli, link misurati, memoria e una chat in streaming.
+
+<img src="docs/images/dashboard.png" alt="dashboard web di tesseract-fabric: nodi del cluster e chat" width="100%">
+
+---
+
 ### 📦 Avvio rapido e utilizzo
 
 #### 1. Compilare e testare
 ```bash
 cargo build --release
-cargo test --release      # 100 test; la prima esecuzione scarica ≈ 2,9 GB di checkpoint GGUF pubblici in models/
+cargo test --release      # 110 test; la prima esecuzione scarica ≈ 2,9 GB di checkpoint GGUF pubblici in models/
 ```
 
 #### 2. Chat con un checkpoint reale su un cluster di 4 nodi in-process
@@ -137,9 +229,10 @@ cargo run --release --bin tesseract-node -- --role chat \
 
 #### 3. Server compatibile OpenAI con continuous batching (dashboard su http://127.0.0.1:8080)
 ```bash
+export TESSERACT_API_KEY=$(openssl rand -hex 16)   # facoltativa sul loopback, obbligatoria oltre
 cargo run --release --bin tesseract-serve -- \
     --model models/qwen2.5-0.5b-instruct-q4_k_m.gguf --local-nodes 2 --sessions 8
-curl -N http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
+curl -N http://127.0.0.1:8080/v1/chat/completions -H "Authorization: Bearer $TESSERACT_API_KEY" \
     -d '{"messages":[{"role":"user","content":"Ciao!"}],"stream":true}'
 ```
 
@@ -150,9 +243,9 @@ tesseract-node --role worker --id 0 --listen 0.0.0.0:7000 --discover --cluster-s
 # un peer Tailscale: indicare l'indirizzo 100.x del coordinatore
 tesseract-node --role worker --id 3 --listen 0.0.0.0:7000 --discover --cluster-secret s3cret --seeds 100.101.102.103:49777
 # coordinatore: attende 4 worker, li sonda, risolve la topologia, assegna i ruoli e serve
-tesseract-serve --discover 4 --cluster-secret s3cret --model model.gguf --http 0.0.0.0:8080
+tesseract-serve --discover 4 --cluster-secret s3cret --model model.gguf --http 0.0.0.0:8080 --api-key "$TESSERACT_API_KEY"
 ```
-Su una LAN fidata, aggiungere `--lan-broadcast` per trovare i peer senza seed.
+Su una LAN fidata, aggiungere `--lan-broadcast` per trovare i peer senza seed. La dashboard si apre come `http://host:8080/#key=<CHIAVE>`.
 
 #### 5. Benchmark
 ```bash
@@ -161,8 +254,40 @@ cargo run --release --bin tesseract-bench -- --quick   # esecuzione breve
 ```
 I cluster di benchmark emulano ogni nodo come thread su un unico host, con link modellati e rallentamenti di calcolo derivati dai profili dei dispositivi. I risultati dipendono dal carico e dal regime di clock dell'host, come descritto nella sezione v1.0.0.
 
-### 📊 Stato della release v1.0.0
-- **100/100 test**, zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
+
+<details open>
+<summary><b>Prestazioni misurate</b> (Apple M3 Max; grafici e fonti: <code>scripts/make_figures.py</code>)</summary>
+
+![Kernel throughput per format, V9 vs v1.0](docs/images/kernels-light.svg#gh-light-mode-only)
+![Kernel throughput per format, V9 vs v1.0](docs/images/kernels-dark.svg#gh-dark-mode-only)
+
+| GMAC/s, un thread, una riga | Q8_0 | Q4_0 | Q5_0 | Q4_K | Q6_K |
+|---|---:|---:|---:|---:|---:|
+| V9.0 | 14.7 | 15.2 | 13.0 | 10.5 | 12.4 |
+| v1.0 | 26.4 | 25.1 | 20.7 | 30.0 | 24.9 |
+
+![Single-node decode speedup per checkpoint](docs/images/decode-light.svg#gh-light-mode-only)
+![Single-node decode speedup per checkpoint](docs/images/decode-dark.svg#gh-dark-mode-only)
+
+![Continuous batching aggregate throughput](docs/images/batching-light.svg#gh-light-mode-only)
+![Continuous batching aggregate throughput](docs/images/batching-dark.svg#gh-dark-mode-only)
+
+| Richieste concorrenti | 1 | 2 | 4 | 8 |
+|---|---:|---:|---:|---:|
+| tok/s aggregati (Qwen2.5-0.5B, 2 rank H-TEP) | 73.2 | 90.8 | 117.6 | 125.0 |
+
+</details>
+
+### 🔒 Modello di sicurezza
+- **API HTTP**: `--api-key CHIAVE` (o `TESSERACT_API_KEY`) richiede `Authorization: Bearer CHIAVE` su ogni endpoint `/v1/*` (confronto a tempo costante). `tesseract-serve` **rifiuta di ascoltare oltre il loopback senza chiave**, a meno di passare `--no-auth` di proposito.
+- **CORS** è disattivato, a meno che `--cors-origin https://tua.app` indichi l'unica origine ammessa.
+- **Limiti sulle richieste**, applicati mentre i byte arrivano: 64 KB di intestazione, 100 righe di header, 8 MB di corpo, niente corpi chunked. Le connessioni sono limitate a 64 (`--max-connections`) e a 16 per IP client (`--max-per-client`); quelle in eccesso ricevono subito un `503`.
+- **TLS**: va messo un reverse proxy davanti, ad es. Caddy: `tuo.host { reverse_proxy 127.0.0.1:8080 }` (l'SSE passa senza problemi).
+- **Traffico tra nodi**: `--cluster-secret` autentica i beacon di discovery *e* ogni connessione TCP tra nodi, con un challenge-response reciproco su nonce freschi e un MAC SipHash-2-4 a 128 bit. Un host senza il segreto non può collegarsi né iniettare frame. I frame **non sono cifrati**: su reti non fidate il cluster va fatto passare su WireGuard / Tailscale. Il segreto predefinito è pubblico; oltre il loopback impostane sempre uno tuo.
+- **Risorse annunciate**: i nodi annunciano la memoria *disponibile in quel momento* (Linux `MemAvailable`; macOS calcolata come Monitoraggio Attività), non la RAM installata.
+
+### 📊 Stato del progetto
+- **110/110 test** (100 alla v1.0.0, più l'irrobustimento della sicurezza successivo), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
 - **Inferenza distribuita esatta**: H-TEP a 4 rank coincide con un singolo nodo su 40/40 token e 40/40 righe di logit per SmolLM2, Qwen2.5, Qwen3 e Llama 3.2 (modelli densi; il routing degli expert MoE non rientra nella garanzia di esattezza).
 - **Scorecard del benchmark**: 14/15 e 13/15 nelle due run finali consecutive.
   - La riga 9 dello Scenario 2 (la speculazione che batte la propria ablazione su un cluster eterogeneo) arriva alla parità, 0,99–1,00×, con l'host a piena velocità. È il limite documentato: il lookahead dello stage 0, usato anche dall'ablazione, cattura già quasi tutto il guadagno speculativo.
@@ -185,7 +310,7 @@ A self-contained distributed transformer-inference engine in pure Rust — **zer
 * **Exo-Ring-Pipeline**: layer-sharded ring pipeline, one token per pass, FP16 activations.
 * **RDMA-Tensor-Parallel**: Megatron-style tensor parallelism, two synchronous AllReduce barriers per layer.
 
-Everything below is implemented and executed, with no mocks or stubs: the tensor runtime and GEMM micro-kernels, the MoE transformer, the activation codec, speculative trees and lossless verification, expert pre-staging, paged KV with LSE-merged attention, the `TesseractWire` protocol with CRC32C, link-shaped multipath transport, the topology solver, the worker/coordinator daemons, and the benchmark harness. `cargo test --release` runs 100 tests (34 unit, 31 mathematical / kernel verifications, 14 multi-node socket tests, 6 V8.0 production tests on real files and sockets, 9 V9.0 tests on real third-party checkpoints, 6 V10.0 tests). The first run downloads six public GGUF checkpoints (≈ 2.9 GB) into the git-ignored `models/` directory. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean, and `.github/workflows/ci.yml` runs all three on Linux and macOS.
+Everything below is implemented and executed, with no mocks or stubs: the tensor runtime and GEMM micro-kernels, the MoE transformer, the activation codec, speculative trees and lossless verification, expert pre-staging, paged KV with LSE-merged attention, the `TesseractWire` protocol with CRC32C, link-shaped multipath transport, the topology solver, the worker/coordinator daemons, and the benchmark harness. `cargo test --release` runs 110 tests (37 unit, 31 mathematical / kernel verifications, 14 multi-node socket tests, 6 V8.0 production tests on real files and sockets, 9 V9.0 tests on real third-party checkpoints, 6 V10.0 tests, 7 security tests). The first run downloads six public GGUF checkpoints (≈ 2.9 GB) into the git-ignored `models/` directory. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean, and `.github/workflows/ci.yml` runs all three on Linux and macOS.
 
 **v1.0.0 (Gold Release)** ([details](#v100-gold-release-drafting-on-the-studio-a-clock-regime-aware-planner-and-the-scenario-2-limit)):
 * zero external crates, 100/100 tests, and bit-for-bit single-node parity of 4-rank H-TEP on five real GGUF checkpoints (K-quants included);
@@ -226,7 +351,7 @@ It still uses zero external crates.
 
 ```bash
 cargo build --release
-cargo test --release                                   # 100 tests (first run downloads ≈ 2.9 GB of GGUF checkpoints into models/)
+cargo test --release                                   # 110 tests (first run downloads ≈ 2.9 GB of GGUF checkpoints into models/)
 cargo run --release --bin tesseract-bench              # all scenarios → stdout + bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # shorter run (48 tokens, 2 rounds, 2K/8K contexts)
 cargo run --release --bin tesseract-bench -- --scenarios 3 --contexts 2048,65536   # select scenarios / contexts
@@ -253,12 +378,12 @@ Multi-process / multi-machine (each worker also binds its KV service on `port+1`
 
 ```bash
 # on each device (ids are positions in the coordinator's --peers list)
-tesseract-node --role worker --id 0 --listen 0.0.0.0:7000      # e.g. Mac Studio
-tesseract-node --role worker --id 1 --listen 0.0.0.0:7000      # e.g. RTX 5090 box
-tesseract-node --role worker --id 2 --listen 0.0.0.0:7000      # e.g. Android (Termux) / laptop
+tesseract-node --role worker --id 0 --listen 0.0.0.0:7000 --cluster-secret s3cret   # e.g. Mac Studio
+tesseract-node --role worker --id 1 --listen 0.0.0.0:7000 --cluster-secret s3cret   # e.g. RTX 5090 box
+tesseract-node --role worker --id 2 --listen 0.0.0.0:7000 --cluster-secret s3cret   # e.g. Android (Termux) / laptop
 
 # anywhere reachable by all workers
-tesseract-node --role coordinator --listen 10.0.0.5:6999 \
+tesseract-node --role coordinator --listen 10.0.0.5:6999 --cluster-secret s3cret \
   --peers 10.0.0.2:7000,10.0.0.3:7000,10.0.0.4:7000 \
   --profile studio-m5max,rtx5090,android-snapdragon \
   --engine all --model bench --tokens 64
@@ -835,7 +960,7 @@ tesseract-node --role worker --id 0 --listen 0.0.0.0:7000 --discover --cluster-s
 tesseract-node --role worker --id 3 --listen 0.0.0.0:7000 --discover --cluster-secret s3cret --seeds 100.101.102.103:49777
 
 # coordinator: wait for N workers, probe, solve, assign, serve
-tesseract-serve --discover 4 --cluster-secret s3cret --model bench-q4_0.gguf --http 0.0.0.0:8080
+tesseract-serve --discover 4 --cluster-secret s3cret --model bench-q4_0.gguf --http 0.0.0.0:8080 --api-key "$TESSERACT_API_KEY"
 ```
 
 Workers measure themselves at start-up: single-core GEMM TFLOPS, single-stream copy bandwidth, installed RAM and load average. The coordinator measures each link. The solver's plan (pipeline stages, or an H-TEP group of nodes under 100 µs RTT, plus the drafter and KV pools) becomes the assignment; links are left unshaped and slowdown is 1, so the real network and hardware are the model. Clusters form at start-up. A worker that appears later is not added to a running cluster; restart the coordinator to re-plan.

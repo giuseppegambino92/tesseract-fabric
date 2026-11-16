@@ -271,6 +271,8 @@ impl EndpointShared {
             }
             let mut s = s.unwrap();
             s.set_nodelay(true)?;
+            // prove the cluster secret before sending any frame
+            super::auth::client_handshake(&mut s, &super::auth::cluster_key())?;
             let mut hello = TesseractFrame::new(FrameType::Hello, self.id, to, vec![li as u8]);
             hello.header.sequence_id = li as u64;
             s.write_all(&hello.encode())?;
@@ -425,6 +427,7 @@ impl Endpoint {
             local_peers: Mutex::new(std::collections::HashSet::new()),
         });
         let sh = shared.clone();
+        let key = super::auth::cluster_key();
         thread::Builder::new()
             .name(format!("tess-accept-{id}"))
             .spawn(move || {
@@ -438,7 +441,14 @@ impl Endpoint {
                     let sh2 = sh.clone();
                     thread::Builder::new()
                         .name(format!("tess-reader-{id}"))
-                        .spawn(move || reader_loop(conn, tx, sh2))
+                        .spawn(move || {
+                            // no frame is read from a peer that cannot prove
+                            // the cluster secret
+                            let mut conn = conn;
+                            if super::auth::server_handshake(&mut conn, &key).is_ok() {
+                                reader_loop(conn, tx, sh2);
+                            }
+                        })
                         .ok();
                 }
             })?;

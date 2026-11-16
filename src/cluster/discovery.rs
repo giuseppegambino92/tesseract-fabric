@@ -256,44 +256,147 @@ pub fn load_average() -> f32 {
     0.0
 }
 
-/// Physical memory available to the engine, in MB.
-pub fn available_ram_mb() -> u32 {
+/// Installed physical memory, in MB (0 where unknown).
+pub fn installed_ram_mb() -> u32 {
     #[cfg(target_os = "macos")]
     {
-        let mut v = 0u64;
-        let mut len = std::mem::size_of::<u64>();
-        let name = b"hw.memsize\0";
-        // SAFETY: NUL-terminated name, `v` is 8 writable bytes.
-        let r = unsafe {
-            sysctlbyname(
-                name.as_ptr() as *const i8,
-                &mut v as *mut u64 as *mut _,
-                &mut len,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if r == 0 {
+        if let Some(v) = sysctl_u64(b"hw.memsize\0") {
             return (v >> 20) as u32;
         }
     }
     #[cfg(target_os = "linux")]
-    if let Ok(s) = std::fs::read_to_string("/proc/meminfo") {
-        if let Some(kb) = s
-            .lines()
-            .find(|l| l.starts_with("MemAvailable:"))
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|v| v.parse::<u64>().ok())
-        {
-            return (kb >> 10) as u32;
-        }
+    if let Some(kb) = meminfo_kb("MemTotal:") {
+        return (kb >> 10) as u32;
     }
     0
 }
 
+#[cfg(target_os = "macos")]
+fn sysctl_u64(name: &[u8]) -> Option<u64> {
+    let mut v = 0u64;
+    let mut len = std::mem::size_of::<u64>();
+    // SAFETY: NUL-terminated name, `v` is 8 writable bytes.
+    let r = unsafe {
+        sysctlbyname(
+            name.as_ptr() as *const i8,
+            &mut v as *mut u64 as *mut _,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (r == 0).then_some(v)
+}
+
+#[cfg(target_os = "linux")]
+fn meminfo_kb(key: &str) -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find(|l| l.starts_with(key))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+/// `vm_statistics64` (mach/vm_statistics.h), 152 bytes.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Default)]
+struct VmStatistics64 {
+    free_count: u32,
+    active_count: u32,
+    inactive_count: u32,
+    wire_count: u32,
+    zero_fill_count: u64,
+    reactivations: u64,
+    pageins: u64,
+    pageouts: u64,
+    faults: u64,
+    cow_faults: u64,
+    lookups: u64,
+    hits: u64,
+    purges: u64,
+    purgeable_count: u32,
+    speculative_count: u32,
+    decompressions: u64,
+    compressions: u64,
+    swapins: u64,
+    swapouts: u64,
+    compressor_page_count: u32,
+    throttled_count: u32,
+    external_page_count: u32,
+    internal_page_count: u32,
+    total_uncompressed_pages_in_compressor: u64,
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn mach_host_self() -> u32;
+    fn host_statistics64(host: u32, flavor: i32, info: *mut i32, count: *mut u32) -> i32;
+}
+
+/// Memory the engine can use now, in MB: on Linux `MemAvailable`; on macOS
+/// installed RAM minus what is in use and cannot simply be reclaimed (app
+/// memory = anonymous pages not marked purgeable, wired memory, and the
+/// compressor's pages), which is how Activity Monitor computes "memory
+/// used". File cache and purgeable pages count as available, since the
+/// kernel drops them on demand. Falls back to installed RAM if the
+/// statistics are unavailable.
+pub fn available_ram_mb() -> u32 {
+    #[cfg(target_os = "macos")]
+    {
+        const HOST_VM_INFO64: i32 = 4;
+        let mut vm = VmStatistics64::default();
+        let mut count = (std::mem::size_of::<VmStatistics64>() / 4) as u32;
+        // SAFETY: `vm` is a correctly sized, writable vm_statistics64 and
+        // `count` holds its size in 32-bit words (HOST_VM_INFO64_COUNT).
+        let r = unsafe {
+            host_statistics64(
+                mach_host_self(),
+                HOST_VM_INFO64,
+                &mut vm as *mut VmStatistics64 as *mut i32,
+                &mut count,
+            )
+        };
+        let page = sysctl_u64(b"vm.pagesize\0").unwrap_or(16384);
+        let total = sysctl_u64(b"hw.memsize\0").unwrap_or(0);
+        if r == 0 && total > 0 {
+            let app = (vm.internal_page_count as u64).saturating_sub(vm.purgeable_count as u64);
+            let used = (app + vm.wire_count as u64 + vm.compressor_page_count as u64) * page;
+            return (total.saturating_sub(used) >> 20) as u32;
+        }
+        return installed_ram_mb();
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(kb) = meminfo_kb("MemAvailable:") {
+        return (kb >> 10) as u32;
+    }
+    #[allow(unreachable_code)]
+    installed_ram_mb()
+}
+
+#[cfg(test)]
+mod ram_tests {
+    use super::*;
+
+    #[test]
+    fn available_ram_is_positive_and_below_installed() {
+        let (avail, total) = (available_ram_mb(), installed_ram_mb());
+        eprintln!("available {avail} MB of {total} MB installed");
+        if total == 0 {
+            return; // platform without a probe
+        }
+        assert!(avail > 0, "available {avail} MB");
+        assert!(
+            avail <= total,
+            "available {avail} MB > installed {total} MB"
+        );
+    }
+}
+
 impl LocalProfile {
     /// Measure this host: single-core GEMM throughput, single-stream copy
-    /// bandwidth and installed RAM (≈ 50 ms).
+    /// bandwidth and available RAM (≈ 50 ms).
     pub fn detect() -> Self {
         let platform = if cfg!(target_os = "android") {
             Platform::MobileEdgeNpu

@@ -6,6 +6,17 @@
 //!                   [--discover N] [--cluster-secret S] [--discovery-bind ip:port] [--lan-broadcast]
 //!                   [--engine auto|htep|pipeline] [--codec lossless|klt|fp16] [--max-tokens 256]
 //!                   [--sessions N] [--draft-model <small.gguf>]
+//!                   [--api-key KEY | --no-auth] [--cors-origin ORIGIN]
+//!                   [--max-connections 64] [--max-per-client 16]
+//!
+//! Security: `--api-key` (or `TESSERACT_API_KEY`) makes every `/v1/*`
+//! endpoint require `Authorization: Bearer KEY`; open the dashboard as
+//! `http://host:port/#key=KEY`. Listening on a non-loopback address without
+//! a key is refused unless `--no-auth` is given explicitly. CORS is off
+//! unless `--cors-origin` names the one origin to allow. `--cluster-secret`
+//! also authenticates every node-to-node connection (see `wire::auth`); use
+//! a reverse proxy for TLS and WireGuard / Tailscale for node traffic on
+//! networks you do not trust.
 //!
 //! `--sessions N` turns on continuous batching: one H-TEP engine serves up to
 //! N concurrent requests in shared forward passes, each with its own KV slot
@@ -31,7 +42,7 @@ use tesseract_fabric::cluster::discovery::{
 };
 use tesseract_fabric::cluster::{start_worker, Driver, TesseractOptions};
 use tesseract_fabric::loader::sharded_loader::{describe, resolve_model, tokenizer_for};
-use tesseract_fabric::server::http::{Engine, HotJoin, Server, ServerState};
+use tesseract_fabric::server::http::{Engine, HotJoin, HttpSecurity, Server, ServerState};
 use tesseract_fabric::tensor::quant::WeightFormat;
 
 fn arg(args: &[String], k: &str) -> Option<String> {
@@ -43,11 +54,37 @@ fn arg(args: &[String], k: &str) -> Option<String> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("usage: tesseract-serve [--http ip:port] [--model tiny|bench|PATH] [--quant FMT] [--local-nodes N | --discover N] [--slots S | --sessions N] [--draft-model PATH] [--engine auto|htep|pipeline] [--codec lossless|klt|fp16] [--cluster-secret S] [--discovery-bind ip:port] [--lan-broadcast] [--max-tokens N]");
+        eprintln!("usage: tesseract-serve [--http ip:port] [--model tiny|bench|PATH] [--quant FMT] [--local-nodes N | --discover N] [--slots S | --sessions N] [--draft-model PATH] [--engine auto|htep|pipeline] [--codec lossless|klt|fp16] [--cluster-secret S] [--discovery-bind ip:port] [--lan-broadcast] [--max-tokens N] [--api-key KEY | --no-auth] [--cors-origin ORIGIN] [--max-connections N] [--max-per-client N]");
         return;
     }
     tesseract_fabric::tensor::prefer_performance_cores();
     let http = arg(&args, "--http").unwrap_or_else(|| "127.0.0.1:8080".into());
+    // access control: decided before anything is loaded or bound
+    let api_key = arg(&args, "--api-key")
+        .or_else(|| std::env::var("TESSERACT_API_KEY").ok())
+        .filter(|k| !k.is_empty());
+    let no_auth = args.iter().any(|a| a == "--no-auth");
+    let loopback = http
+        .parse::<std::net::SocketAddr>()
+        .map(|a| a.ip().is_loopback())
+        .unwrap_or_else(|_| http.starts_with("localhost:"));
+    if !loopback && api_key.is_none() && !no_auth {
+        eprintln!(
+            "refusing to serve {http} without authentication: anyone who can reach it could use the cluster.\n\
+             Pass --api-key KEY (or set TESSERACT_API_KEY), or --no-auth to serve it open on purpose."
+        );
+        std::process::exit(2);
+    }
+    let security = HttpSecurity {
+        api_key: api_key.clone(),
+        cors_origin: arg(&args, "--cors-origin"),
+        max_connections: arg(&args, "--max-connections")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64),
+        max_per_client: arg(&args, "--max-per-client")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16),
+    };
     let spec = arg(&args, "--model")
         .or_else(|| arg(&args, "--gguf"))
         .or_else(|| arg(&args, "--safetensors"))
@@ -101,6 +138,8 @@ fn main() {
     }
     let secret = arg(&args, "--cluster-secret").unwrap_or_else(|| "tesseract-local".into());
     let key = ClusterKey::from_secret(&secret);
+    // the same secret authenticates every node-to-node TCP connection
+    tesseract_fabric::wire::auth::set_cluster_secret(&secret);
     let remote: Option<usize> = arg(&args, "--discover").and_then(|s| s.parse().ok());
     let n = remote.unwrap_or_else(|| {
         arg(&args, "--local-nodes")
@@ -213,6 +252,7 @@ fn main() {
             .unwrap_or_else(|| path.clone()),
     };
     let mut state = ServerState::new(engines, tok, &model_id, describe(&cfg));
+    state.security = security;
     eprintln!("chat template: {}", state.chat.name());
     if tess.sessions > 0 {
         eprintln!(
@@ -244,6 +284,17 @@ fn main() {
     } else {
         println!("discovery on udp {} (custom cluster secret)", listener.addr);
     }
+    // after the two address lines, which callers parse in this order
+    println!(
+        "http auth: {}",
+        if api_key.is_some() {
+            "API key required on /v1/* (dashboard: open /#key=<KEY>)"
+        } else if loopback {
+            "none (loopback only)"
+        } else {
+            "NONE (--no-auth): the API is open to anyone who can reach it"
+        }
+    );
     use std::io::Write;
     let _ = std::io::stdout().flush();
     server.serve();

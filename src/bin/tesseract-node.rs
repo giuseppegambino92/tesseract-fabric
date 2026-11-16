@@ -64,6 +64,22 @@ fn usage() -> ! {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // the cluster secret authenticates every node-to-node TCP connection
+    // (`wire::auth`), not only discovery beacons
+    let secret = arg(&args, "--cluster-secret");
+    if let Some(s) = secret.as_deref() {
+        tesseract_fabric::wire::auth::set_cluster_secret(s);
+    }
+    let exposed = arg(&args, "--listen")
+        .and_then(|l| l.parse::<std::net::SocketAddr>().ok())
+        .is_some_and(|a| !a.ip().is_loopback());
+    if exposed && secret.is_none() {
+        eprintln!(
+            "warning: listening beyond loopback with the public default cluster secret; \
+             any host that can reach this port can join the cluster. Pass the same \
+             --cluster-secret to every node, and use WireGuard / Tailscale on untrusted networks."
+        );
+    }
     match arg(&args, "--role").as_deref() {
         Some("worker") => worker(&args),
         Some("coordinator") if args.iter().any(|a| a == "--discover") => {

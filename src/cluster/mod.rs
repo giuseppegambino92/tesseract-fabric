@@ -1319,12 +1319,22 @@ mod shaper_tests {
         }
         let ms = 1_000_000u64;
         let mut s = ComputeShaper::new(10.0);
-        // 15 ms off-CPU inside a 10× node: V10.0 stretched this to 150 ms
-        let t0 = mono_ns();
+        // 15 ms off-CPU inside a 10× node: V10.0 stretched this to 150 ms.
+        // Checked on the shaper's own accounting, not on wall time (a busy
+        // CI VM can oversleep by tens of ms):
+        // busy = wall_inside + 9·compute and jitter = wall_inside − compute,
+        // so busy − jitter = 10·compute exactly.
         s.run(|| std::thread::sleep(std::time::Duration::from_millis(15)));
-        let idle = mono_ns() - t0;
-        assert!(idle < 60 * ms, "idle time was amplified: {idle}");
-        assert!(s.jitter_ns >= 10 * ms);
+        let compute = (s.busy_ns - s.jitter_ns) / 10;
+        assert!(
+            s.jitter_ns >= 10 * ms,
+            "off-CPU time not recognised: {}",
+            s.jitter_ns
+        );
+        assert!(
+            compute < 2 * ms,
+            "idle time counted as compute (and stretched 9×): {compute}"
+        );
         // 4 ms of real compute is still stretched 10×
         let mut s = ComputeShaper::new(10.0);
         let t0 = mono_ns();

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — security hardening and presentation
+
+### Security
+- **HTTP API authentication**: `--api-key` / `TESSERACT_API_KEY` requires `Authorization: Bearer` on every `/v1/*` endpoint (constant-time comparison; OpenAI-style `authentication_error`). The dashboard takes the key from `/#key=…` and keeps it for the tab only.
+- **Open API refused beyond loopback**: `tesseract-serve` exits with an error when `--http` is not a loopback address and no key is set, unless `--no-auth` is passed explicitly.
+- **CORS** off by default (was `Access-Control-Allow-Origin: *`); `--cors-origin` allows one origin.
+- **Bounded request parsing**: head limit enforced while bytes arrive (was checked only after a full line, so a newline-free stream could allocate without bound); at most 100 header lines; `Transfer-Encoding` and duplicate or invalid `Content-Length` refused; the body grows with the bytes received instead of being pre-allocated from the declared length.
+- **Connection admission**: at most 64 concurrent connections (`--max-connections`) and 16 per client IP (`--max-per-client`); excess connections get an immediate `503` and no thread. Write timeouts on every connection.
+- **Authenticated node-to-node connections** (`wire::auth`): every TesseractWire TCP connection starts with a mutual challenge-response (fresh nonces, 128-bit SipHash-2-4 MAC keyed from `--cluster-secret`); no frame is read from a peer that fails it. Frames are not encrypted: use WireGuard / Tailscale on untrusted networks. `tesseract-node` warns when it listens beyond loopback with the public default secret.
+- **Available memory on macOS**: nodes advertise installed RAM minus app, wired and compressed memory (as Activity Monitor computes it) instead of installed RAM (`hw.memsize`).
+
+### Tests and tooling
+- 10 new tests (`tests/security.rs`, wire-handshake and memory unit tests): 110 in total.
+- The shaper unit test now checks the shaper's own accounting instead of wall time (it failed on a busy GitHub macOS runner that overslept a 15 ms sleep by 50 ms).
+- CI can be started by hand (`workflow_dispatch`).
+- `LICENSE` (Apache-2.0, as declared in `Cargo.toml`).
+
+### Documentation
+- README: badges, architecture diagram, performance charts (light and dark), terminal screenshots and a dashboard screenshot from real runs, and a security section (EN / IT). Regenerate with `scripts/make_figures.py` and `scripts/make_screenshots.py`.
+
 ## 1.0.0 — Gold Release (2026-11-16)
 
 Zero external crates. 100 tests (`cargo test --release`), `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean; CI on Linux and macOS (`.github/workflows/ci.yml`).

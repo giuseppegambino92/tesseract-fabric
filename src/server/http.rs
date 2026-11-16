@@ -20,6 +20,14 @@
 //!   weights are shared through the OS page cache. Concurrent requests take
 //!   different slots; when every slot is busy, a request waits.
 //!
+//! Security ([`HttpSecurity`]): with an API key every `/v1/*` endpoint
+//! requires `Authorization: Bearer <key>` (constant-time comparison); CORS
+//! is off unless one origin is configured; requests are parsed with hard
+//! limits enforced while bytes arrive (64 KB head, 8 MB body, no chunked
+//! bodies); and admission is capped globally and per client IP, so excess
+//! connections get an immediate 503 instead of a thread. TLS belongs in a
+//! reverse proxy in front of the server.
+//!
 //! Hot-join: with a [`HotJoin`] watcher, workers that start announcing (or
 //! stop) are probed and the affected slot is re-planned between requests;
 //! a request in flight always finishes on the plan it started with.
@@ -35,15 +43,57 @@ use crate::cluster::{
 };
 use crate::model::ModelConfig;
 use crate::tokenizer::{stop_tokens, ChatFormat, SamplingParams, Tokenizer};
+use std::collections::HashMap;
+use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const UI: &str = include_str!("ui.html");
 const MAX_HEAD: usize = 64 << 10;
 const MAX_BODY: usize = 8 << 20;
+const MAX_HEADERS: usize = 100;
+
+/// Access control and resource limits of the HTTP server.
+#[derive(Clone, Debug)]
+pub struct HttpSecurity {
+    /// Bearer token required on every `/v1/*` endpoint (`None`: open API).
+    pub api_key: Option<String>,
+    /// The one origin allowed by CORS (`None`: no CORS headers at all).
+    pub cors_origin: Option<String>,
+    /// Concurrent connections served at once; more get an immediate 503.
+    pub max_connections: usize,
+    /// Concurrent connections per client IP.
+    pub max_per_client: usize,
+}
+
+impl Default for HttpSecurity {
+    fn default() -> Self {
+        HttpSecurity {
+            api_key: None,
+            cors_origin: None,
+            max_connections: 64,
+            max_per_client: 16,
+        }
+    }
+}
+
+thread_local! {
+    /// CORS origin of the connection this thread is serving (each connection
+    /// has its own thread, so `respond` can add the header without plumbing).
+    static CORS: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+fn cors_headers() -> String {
+    CORS.with(|c| match c.borrow().as_deref() {
+        Some(o) => format!(
+            "Access-Control-Allow-Origin: {o}\r\nVary: Origin\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        ),
+        None => String::new(),
+    })
+}
 
 /// A measured link to a node (from discovery probes), for the status page.
 #[derive(Clone, Debug, Default)]
@@ -150,6 +200,7 @@ pub struct ServerState {
     pub default_max_tokens: u32,
     pub hot_join: Option<HotJoin>,
     pub replans: AtomicU64,
+    pub security: HttpSecurity,
     started: Instant,
     served: Mutex<(u64, u64)>,
 }
@@ -175,6 +226,7 @@ impl ServerState {
             default_max_tokens: 256,
             hot_join: None,
             replans: AtomicU64::new(0),
+            security: HttpSecurity::default(),
             started: Instant::now(),
             served: Mutex::new((0, 0)),
         }
@@ -283,12 +335,32 @@ impl Server {
                 .name("tess-membership".into())
                 .spawn(move || membership_loop(st));
         }
+        let admission = Arc::new(Admission::default());
         for conn in self.listener.incoming() {
-            let Ok(s) = conn else { continue };
+            let Ok(mut s) = conn else { continue };
+            let ip = s.peer_addr().map(|a| a.ip()).ok();
+            let sec = &self.state.security;
+            let Some(ticket) = admission.admit(ip, sec.max_connections, sec.max_per_client) else {
+                // over capacity: answer at once, never spawn a thread
+                let body =
+                    r#"{"error":{"message":"server busy","type":"server_overloaded_error"}}"#;
+                let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
+                let _ = s.write_all(
+                    format!(
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nRetry-After: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                continue;
+            };
             let st = self.state.clone();
             let _ = std::thread::Builder::new()
                 .name("tess-http".into())
-                .spawn(move || handle(s, &st));
+                .spawn(move || {
+                    let _ticket = ticket;
+                    handle(s, &st)
+                });
         }
     }
 
@@ -301,8 +373,65 @@ impl Server {
     }
 }
 
+// --- admission -----------------------------------------------------------------------
+
+/// Counts of connections being served, globally and per client IP.
+#[derive(Default)]
+struct Admission {
+    total: AtomicUsize,
+    per_ip: Mutex<HashMap<IpAddr, usize>>,
+}
+
+/// One admitted connection; releases its slot when dropped.
+struct Ticket {
+    adm: Arc<Admission>,
+    ip: Option<IpAddr>,
+}
+
+impl Admission {
+    fn admit(
+        self: &Arc<Self>,
+        ip: Option<IpAddr>,
+        max: usize,
+        per_client: usize,
+    ) -> Option<Ticket> {
+        let mut m = self.per_ip.lock().unwrap_or_else(|e| e.into_inner());
+        if self.total.load(Ordering::Acquire) >= max {
+            return None;
+        }
+        if let Some(ip) = ip {
+            let n = m.entry(ip).or_insert(0);
+            if *n >= per_client {
+                return None;
+            }
+            *n += 1;
+        }
+        self.total.fetch_add(1, Ordering::AcqRel);
+        Some(Ticket {
+            adm: self.clone(),
+            ip,
+        })
+    }
+}
+
+impl Drop for Ticket {
+    fn drop(&mut self) {
+        let mut m = self.adm.per_ip.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ip) = self.ip {
+            if let Some(n) = m.get_mut(&ip) {
+                *n -= 1;
+                if *n == 0 {
+                    m.remove(&ip);
+                }
+            }
+        }
+        self.adm.total.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 // --- HTTP plumbing ------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct Request {
     pub method: String,
     pub path: String,
@@ -319,19 +448,54 @@ impl Request {
     }
 }
 
-/// Parse one HTTP/1.1 request (Content-Length bodies).
+/// Append one line (through `\n`) to `out`, never letting `out` exceed
+/// `limit` bytes: the limit is enforced while bytes arrive, so a client
+/// streaming a line without a newline cannot make the server allocate past
+/// it. Returns the bytes read (0 at end of stream).
+fn read_line_bounded(
+    r: &mut impl BufRead,
+    out: &mut Vec<u8>,
+    limit: usize,
+) -> Result<usize, String> {
+    let start = out.len();
+    loop {
+        let buf = r.fill_buf().map_err(|e| e.to_string())?;
+        if buf.is_empty() {
+            return Ok(out.len() - start);
+        }
+        let room = limit.saturating_sub(out.len());
+        let (take, done) = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        if take > room {
+            return Err("request head too large".into());
+        }
+        out.extend_from_slice(&buf[..take]);
+        r.consume(take);
+        if done {
+            return Ok(out.len() - start);
+        }
+    }
+}
+
+/// Parse one HTTP/1.1 request (Content-Length bodies), with the head capped
+/// at 64 KB / 100 header lines and the body at 8 MB, all enforced as bytes
+/// arrive. Chunked bodies are refused.
 pub fn read_request(r: &mut impl BufRead) -> Result<Request, String> {
     let mut head = Vec::new();
+    let mut lines = 0usize;
     loop {
-        let n = r.read_until(b'\n', &mut head).map_err(|e| e.to_string())?;
+        let n = read_line_bounded(r, &mut head, MAX_HEAD)?;
         if n == 0 {
             return Err("connection closed".into());
         }
         if head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n") {
             break;
         }
-        if head.len() > MAX_HEAD {
-            return Err("request head too large".into());
+        lines += 1;
+        if lines > MAX_HEADERS + 1 {
+            return Err("too many header lines".into());
         }
     }
     let text = String::from_utf8(head).map_err(|_| "non-UTF-8 request head")?;
@@ -343,16 +507,35 @@ pub fn read_request(r: &mut impl BufRead) -> Result<Request, String> {
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
         .collect();
-    let len = headers
+    if headers
         .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.parse::<usize>().ok())
-        .unwrap_or(0);
+        .any(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"))
+    {
+        return Err("Transfer-Encoding is not supported; send Content-Length".into());
+    }
+    let lens: Vec<&str> = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.as_str())
+        .collect();
+    if lens.len() > 1 {
+        return Err("duplicate Content-Length".into());
+    }
+    let len = match lens.first() {
+        Some(v) => v.parse::<usize>().map_err(|_| "bad Content-Length")?,
+        None => 0,
+    };
     if len > MAX_BODY {
         return Err("body too large".into());
     }
-    let mut body = vec![0u8; len];
-    r.read_exact(&mut body).map_err(|e| e.to_string())?;
+    // grow with the bytes actually received, not with the declared length
+    let mut body = Vec::with_capacity(len.min(64 << 10));
+    r.take(len as u64)
+        .read_to_end(&mut body)
+        .map_err(|e| e.to_string())?;
+    if body.len() != len {
+        return Err("body shorter than Content-Length".into());
+    }
     Ok(Request {
         method,
         path,
@@ -366,13 +549,21 @@ fn respond(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
         200 => "OK",
         204 => "No Content",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
+    let auth = if code == 401 {
+        "WWW-Authenticate: Bearer\r\n"
+    } else {
+        ""
+    };
     let head = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nConnection: close\r\n\r\n",
-        body.len()
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n{}{auth}Connection: close\r\n\r\n",
+        body.len(),
+        cors_headers()
     );
     let _ = s.write_all(head.as_bytes());
     let _ = s.write_all(body);
@@ -384,15 +575,40 @@ fn json_error(s: &mut TcpStream, code: u16, msg: &str) {
         "error",
         Json::obj(vec![
             ("message", Json::str(msg)),
-            ("type", Json::str("invalid_request_error")),
+            (
+                "type",
+                Json::str(if code == 401 {
+                    "authentication_error"
+                } else {
+                    "invalid_request_error"
+                }),
+            ),
         ]),
     )]);
     respond(s, code, "application/json", j.dump().as_bytes());
 }
 
+/// Whether `req` carries the configured API key (always true without one).
+fn authorized(req: &Request, sec: &HttpSecurity) -> bool {
+    let Some(key) = sec.api_key.as_deref() else {
+        return true;
+    };
+    let given = req
+        .header("authorization")
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .unwrap_or("")
+        .trim();
+    crate::wire::auth::ct_eq(given.as_bytes(), key.as_bytes())
+}
+
 fn handle(mut s: TcpStream, st: &ServerState) {
     let _ = s.set_nodelay(true);
     let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = s.set_write_timeout(Some(Duration::from_secs(60)));
+    CORS.with(|c| *c.borrow_mut() = st.security.cors_origin.clone());
     let req = {
         let mut r = BufReader::new(match s.try_clone() {
             Ok(c) => c,
@@ -404,6 +620,13 @@ fn handle(mut s: TcpStream, st: &ServerState) {
         }
     };
     let path = req.path.split('?').next().unwrap_or("/").to_string();
+    if path.starts_with("/v1/") && req.method != "OPTIONS" && !authorized(&req, &st.security) {
+        return json_error(
+            &mut s,
+            401,
+            "missing or invalid API key (Authorization: Bearer <key>)",
+        );
+    }
     match (req.method.as_str(), path.as_str()) {
         ("OPTIONS", _) => respond(&mut s, 204, "text/plain", b""),
         ("GET", "/") | ("GET", "/index.html") => {
@@ -874,7 +1097,10 @@ fn chat(s: &mut TcpStream, st: &ServerState, req: &Request) {
     let mut ttft: Option<f64> = None;
     let mut stream_ok = true;
     if cr.stream {
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n{}Connection: close\r\n\r\n",
+            cors_headers()
+        );
         stream_ok = s.write_all(head.as_bytes()).is_ok()
             && s.write_all(
                 chunk_json(
