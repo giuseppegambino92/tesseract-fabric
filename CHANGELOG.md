@@ -15,6 +15,7 @@
 - 10 new tests (`tests/security.rs`, wire-handshake and memory unit tests): 110 in total.
 - The shaper unit test now checks the shaper's own accounting instead of wall time (it failed on a busy GitHub macOS runner that overslept a 15 ms sleep by 50 ms).
 - CI can be started by hand (`workflow_dispatch`).
+- First native Linux x86_64 CI run: every correctness test passes. Two speed thresholds calibrated on Apple Silicon are now asserted on aarch64 only, with their values printed everywhere: the absolute K-quant floor (the relative K-quant vs Q8_0 check stays on every target), and the tiled f32 batch amortization. The latter exposed a real gap, now listed under known limits.
 - `LICENSE` (Apache-2.0, as declared in `Cargo.toml`).
 
 ### Documentation
@@ -38,6 +39,7 @@ Zero external crates. 100 tests (`cargo test --release`), `cargo fmt --check` an
 - The solver test `solver_keeps_edge_and_wifi_nodes_off_the_critical_path` now checks the cost-based drafter rule instead of requiring the phone.
 
 ### Known limits
+- x86_64: no register-tiled f32 batch GEMM micro-kernel yet (aarch64 only); a 6-row batch costs ≈ 7× one row on a CI runner.
 - Scenario 2 row 9 (spec-on > spec-off): parity (0.99–1.00× paired) at full host speed — the stage-0 cross-step lookahead, also active in the spec-off ablation, captures most of the speculative gain. Final scorecards 14/15 and 13/15 (run 2's row-15 miss is a host-load spike); see README.
 - Benchmarks emulate every node as threads on one host; absolute tok/s and Scenario 2 depend on the host's clock regime.
 - CI workflow is written but has not run (no git remote here); throughput floors in some tests were calibrated on an M3 Max.

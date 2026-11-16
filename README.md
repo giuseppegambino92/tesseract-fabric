@@ -153,6 +153,7 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 - **Benchmark scorecard**: 14/15 and 13/15 in the two final back-to-back runs.
   - Scenario 2 row 9 (speculation beating its own ablation on a heterogeneous cluster) reaches parity, 0.99–1.00×, at full host speed. This is the documented limit: the stage-0 cross-step lookahead, which the ablation also uses, already captures most of the speculative gain.
   - Run 2's row 15 miss was a host-load spike.
+- **Known gap on x86_64**: the quantized kernels have AVX2 paths, but the f32 tiled batch GEMM has register-tiled micro-kernels on aarch64 only. On x86 a 6-row batch costs ≈ 7× one row (CI measurement), so multi-row verification and batching do not amortize weight loads there yet.
   - Details in [v1.0.0](#v100-gold-release-drafting-on-the-studio-a-clock-regime-aware-planner-and-the-scenario-2-limit) and `CHANGELOG.md`.
 
 ---
@@ -292,6 +293,7 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 - **Scorecard del benchmark**: 14/15 e 13/15 nelle due run finali consecutive.
   - La riga 9 dello Scenario 2 (la speculazione che batte la propria ablazione su un cluster eterogeneo) arriva alla parità, 0,99–1,00×, con l'host a piena velocità. È il limite documentato: il lookahead dello stage 0, usato anche dall'ablazione, cattura già quasi tutto il guadagno speculativo.
   - La riga 15 mancata nella run 2 è dovuta a un picco di carico sull'host.
+- **Limite noto su x86_64**: i kernel quantizzati hanno percorsi AVX2, ma il GEMM f32 a tile per i batch ha micro-kernel solo su aarch64. Su x86 un batch di 6 righe costa ≈ 7× una riga (misura della CI), quindi la verifica multi-riga e il batching non ammortizzano ancora la lettura dei pesi.
   - Dettagli nella sezione [v1.0.0](#v100-gold-release-drafting-on-the-studio-a-clock-regime-aware-planner-and-the-scenario-2-limit) (in inglese) e in `CHANGELOG.md`.
 
 ### Sostieni il progetto
