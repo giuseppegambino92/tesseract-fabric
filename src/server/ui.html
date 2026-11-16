@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tesseract Fabric</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #dfe3e8;
+  --accent: #3a5bd9; --accent-soft: #e6ebfb; --ok: #1f8a4c; --warn: #b26a00;
+  --s1: #e9edf5; --s2: #d7e3fb; --s3: #bcd1fa; --s4: #9dbaf5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418; --panel: #1a1e24; --ink: #e6e9ee; --muted: #9aa4b1; --line: #2c323b;
+    --accent: #8aa4ff; --accent-soft: #232c45; --ok: #5cc98a; --warn: #f0b45a;
+    --s1: #232830; --s2: #24304a; --s3: #2c3e66; --s4: #36508a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; }
+header .sub { color: var(--muted); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; padding: 16px 20px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+.nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.node { border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.node .id { font-weight: 600; }
+.node .role { font-size: 12px; color: var(--accent); margin-top: 2px; }
+.node .meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.bar { height: 6px; background: var(--s1); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 13px; margin-top: 10px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+#log { height: 360px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
+.msg { margin: 0 0 12px; white-space: pre-wrap; word-break: break-word; }
+.msg.user { color: var(--muted); }
+.burst { border-radius: 4px; padding: 0 1px; }
+.b1 { background: var(--s1); } .b2 { background: var(--s2); } .b3 { background: var(--s3); } .b4 { background: var(--s4); }
+form { display: flex; gap: 8px; margin-top: 10px; }
+textarea { flex: 1; min-width: 0; resize: vertical; min-height: 44px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--panel); color: var(--ink); font: inherit; }
+button { border: 0; border-radius: 8px; padding: 0 16px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+.controls { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.controls input { width: 64px; }
+.legend { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.legend span { padding: 0 6px; border-radius: 4px; color: var(--ink); }
+#tele { margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tesseract Fabric</h1>
+  <span class="sub" id="engine">connecting…</span>
+</header>
+<main>
+  <section>
+    <h2>Cluster</h2>
+    <div class="nodes" id="nodes"></div>
+    <dl class="kv" id="cluster"></dl>
+  </section>
+  <section>
+    <h2>Chat</h2>
+    <div id="log"></div>
+    <div class="legend">tokens accepted per verification step:
+      <span class="b1">1</span><span class="b2">2</span><span class="b3">3</span><span class="b4">4+</span></div>
+    <form id="f">
+      <textarea id="q" placeholder="Ask the distributed model…">Hello! Tell me about distributed inference.</textarea>
+      <button id="go">Send</button>
+    </form>
+    <div class="controls">
+      <label>max tokens <input id="mt" type="number" value="96" min="1" max="4096"></label>
+      <label>temperature <input id="tp" type="number" value="0.7" step="0.1" min="0" max="2"></label>
+      <label>top-p <input id="pp" type="number" value="0.95" step="0.05" min="0" max="1"></label>
+    </div>
+    <dl class="kv" id="tele"></dl>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtB = (b) => b >= 1 << 30 ? (b / (1 << 30)).toFixed(2) + " GB" : b >= 1 << 20 ? (b / (1 << 20)).toFixed(1) + " MB" : (b / 1024).toFixed(1) + " KB";
+function kv(el, rows) { el.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join(""); }
+function esc(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+async function refresh() {
+  try {
+    const s = await (await fetch("/v1/cluster/status")).json();
+    $("engine").textContent = `${s.engine} · ${s.model} · KV ${s.kv_mode}`;
+    const maxW = Math.max(1, ...s.nodes.map((n) => n.weight_bytes + n.kv_bytes));
+    $("nodes").innerHTML = s.nodes.map((n) => {
+      const l = n.link ? `${n.link.platform} · RTT ${n.link.rtt_us.toFixed(0)} µs · ${n.link.bandwidth_gbps.toFixed(1)} Gb/s` : "";
+      return `<div class="node"><div class="id">node ${n.id} <span class="meta">${n.addr}</span></div>
+        ${n.roles.map((r) => `<div class="role">${esc(r)}</div>`).join("")}
+        <div class="meta">${l}</div>
+        <div class="meta">weights ${fmtB(n.weight_bytes)} · KV ${fmtB(n.kv_bytes)}</div>
+        <div class="bar"><i style="width:${(100 * (n.weight_bytes + n.kv_bytes) / maxW).toFixed(1)}%"></i></div>
+        <div class="meta">sent ${fmtB(n.bytes_sent)} · commits ${n.commits}</div></div>`;
+    }).join("");
+    kv($("cluster"), [
+      ["stages", s.stages.map((x) => `n${x.node}: L${x.first_layer}–${x.end_layer - 1}`).join(" → ")],
+      ["memory balance", s.memory_balance_max_over_mean.toFixed(2) + " (max / mean)"],
+      ["served", `${s.requests_served} requests · ${s.tokens_generated} tokens`],
+    ]);
+  } catch (e) { $("engine").textContent = "status unavailable"; }
+}
+
+$("f").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const q = $("q").value.trim();
+  if (!q) return;
+  $("go").disabled = true;
+  const log = $("log");
+  log.insertAdjacentHTML("beforeend", `<p class="msg user">${esc(q)}</p>`);
+  const out = document.createElement("p");
+  out.className = "msg";
+  log.appendChild(out);
+  const body = { model: "tesseract", stream: true, messages: [{ role: "user", content: q }],
+    max_tokens: +$("mt").value, temperature: +$("tp").value, top_p: +$("pp").value };
+  try {
+    const r = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const rd = r.body.getReader();
+    const td = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await rd.read();
+      if (done) break;
+      buf += td.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6);
+        if (data === "[DONE]") continue;
+        const c = JSON.parse(data);
+        const d = c.choices[0].delta.content || "";
+        if (d) {
+          const n = c.tesseract_step ? c.tesseract_step.tokens : 1;
+          out.insertAdjacentHTML("beforeend", `<span class="burst b${Math.min(n, 4)}">${esc(d)}</span>`);
+          log.scrollTop = log.scrollHeight;
+        }
+        if (c.tesseract_telemetry) {
+          const t = c.tesseract_telemetry;
+          kv($("tele"), [
+            ["throughput", t.tokens_per_sec.toFixed(1) + " tok/s"],
+            ["time to first token", t.ttft_ms.toFixed(1) + " ms"],
+            ["accepted tokens / step", t.accepted_tokens_per_step.toFixed(2)],
+            ["draft acceptance", (100 * t.speculative_acceptance_rate).toFixed(1) + "%"],
+            ["wire bytes / token", fmtB(t.wire_bytes_per_token)],
+            ["activation bytes vs FP16", t.klt_compression_ratio == null ? "n/a (no pipeline hops)" : (100 * t.klt_compression_ratio).toFixed(1) + "%"],
+            ["KV fabric nodes", t.kv_fabric_nodes_used],
+          ]);
+        }
+      }
+    }
+  } catch (e) { out.textContent = "request failed: " + e; }
+  $("go").disabled = false;
+  refresh();
+});
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

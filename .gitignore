@@ -1,0 +1,6 @@
+# build output
+/target/
+
+# downloaded third-party checkpoints (fetched on demand by the tests and bench)
+/models/*.gguf
+/models/*.part

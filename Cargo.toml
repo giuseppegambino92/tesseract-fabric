@@ -1,0 +1,32 @@
+[package]
+name = "tesseract-fabric"
+version = "1.0.0"
+edition = "2021"
+description = "Heterogeneous distributed transformer inference engine: holographic activation compression, speculative tree-braid pipelining, lookahead expert pre-staging, disaggregated LSE-merged KV fabric, and a custom multipath wire protocol."
+license = "Apache-2.0"
+default-run = "tesseract-bench"
+
+# Zero external dependencies: tensor runtime, RNG, f16 codec, CRC32C, wire
+# protocol, link shaper and CLI parsing are all implemented in-tree.
+[dependencies]
+
+[[bin]]
+name = "tesseract-node"
+path = "src/bin/tesseract-node.rs"
+
+[[bin]]
+name = "tesseract-bench"
+path = "src/bin/tesseract-bench.rs"
+
+[[bin]]
+name = "tesseract-serve"
+path = "src/bin/tesseract-serve.rs"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+debug = false
+
+[profile.test]
+opt-level = 3

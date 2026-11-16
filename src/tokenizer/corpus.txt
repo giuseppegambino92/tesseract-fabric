@@ -1,0 +1,39 @@
+The quick brown fox jumps over the lazy dog. A distributed inference engine splits a large language model across several machines: each node holds a shard of the layers or of the experts, and the activations travel between them over the network. The engine streams tokens to the client as soon as they are verified, so the user sees the answer appear word by word.
+
+Speculative decoding drafts several tokens with a small, cheap model and verifies them with the large model in a single batched pass. When the draft agrees with the target, many tokens are accepted at once; when it disagrees, the target's own token is used instead, so the output distribution is exactly the same as ordinary decoding. The acceptance rate depends on how predictable the text is.
+
+Memory bandwidth, not arithmetic, limits single-stream decoding: every generated token must read every active weight once. Quantized weights reduce the bytes read per token. An 8-bit block format stores thirty-two weights with one half-precision scale; a 4-bit format halves that again. The kernels multiply integer blocks and scale the result, so the weights never need to be expanded to full precision in memory.
+
+In questa sezione descriviamo il motore di inferenza distribuita. Il modello viene diviso tra più computer: ogni nodo calcola una parte degli strati e invia le attivazioni al nodo successivo. La qualità della risposta non cambia, perché la verifica speculativa è esatta. Perché è importante? Perché così è possibile eseguire modelli più grandi della memoria di un singolo dispositivo, con più velocità e meno latenza. È una città, è un caffè, è già così: però, perché, più, può, là, giù.
+
+Le reti locali e Tailscale permettono ai nodi di scoprirsi automaticamente: ogni nodo invia un segnale periodico con le proprie caratteristiche, e il coordinatore misura la latenza e la banda di ogni collegamento prima di assegnare i ruoli.
+
+fn main() {
+    let tokens: Vec<u32> = tokenizer.encode("hello world");
+    for (i, t) in tokens.iter().enumerate() {
+        println!("{i}: {t}");
+    }
+    let text = tokenizer.decode(&tokens);
+    assert_eq!(text, "hello world");
+}
+
+def softmax(x):
+    m = max(x)
+    e = [math.exp(v - m) for v in x]
+    s = sum(e)
+    return [v / s for v in e]
+
+for i in range(10):
+    print(i, softmax([1.0, 2.0, 3.0]))
+
+{"model": "tesseract", "messages": [{"role": "user", "content": "Hello!"}], "stream": true, "max_tokens": 64}
+
+curl http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d '{"messages": [{"role": "user", "content": "Ciao"}]}'
+
+Numbers and dates: 2024, 2025, 2026; 3.14159; 1,000,000; 42; 7 days; 12:30; 100%; $19.99; €25,00.
+
+Emoji and symbols: 🚀 ✨ 🤖 ✅ ❤️ 🇮🇹 — “quotes” ‘single’ … → ← ≤ ≥ ≠ × ÷ ° µ λ π Σ.
+
+Questions and answers. What is the capital of Italy? The capital of Italy is Rome. What is two plus two? Two plus two is four. How are you today? I am fine, thank you. Can you help me write a function? Yes, of course: here is a function that adds two numbers. Thank you very much! You are welcome.
+
+The user asked a question, and the assistant answered it. The assistant explained the answer step by step, and the user said thank you. Then the user asked another question about the weather, the time, the news, and the code.
