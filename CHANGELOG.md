@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — security hardening and presentation
+## 1.1.0 — Security hardening and presentation (2026-11-16)
 
 ### Security
 - **HTTP API authentication**: `--api-key` / `TESSERACT_API_KEY` requires `Authorization: Bearer` on every `/v1/*` endpoint (constant-time comparison; OpenAI-style `authentication_error`). The dashboard takes the key from `/#key=…` and keeps it for the tab only.
@@ -18,6 +18,11 @@
 - CI asserts every correctness property and prints, without asserting, the speed thresholds calibrated on Apple Silicon (`TESSERACT_SKIP_PERF_ASSERTS=1`): on shared runners they flipped between runs (batching 1.49× vs 1.5×, Q5_0 0.756× vs 0.75× of Q8_0). On CI the servers started by tests log to the job output.
 - First native Linux x86_64 CI run: every correctness test passes. Two speed thresholds calibrated on Apple Silicon are now asserted on aarch64 only, with their values printed everywhere: the absolute K-quant floor (the relative K-quant vs Q8_0 check stays on every target), and the tiled f32 batch amortization. The latter exposed a real gap, now listed under known limits.
 - `LICENSE` (Apache-2.0, as declared in `Cargo.toml`).
+
+### Upgrading from 1.0.0
+- `tesseract-serve --http <non-loopback>` now needs `--api-key KEY` (or `TESSERACT_API_KEY`), or an explicit `--no-auth`.
+- Browser clients on another origin need `--cors-origin`.
+- Every node of a cluster must use the same `--cluster-secret`: it now authenticates node-to-node connections, not only discovery. Nodes running different versions cannot connect to each other.
 
 ### Documentation
 - README: badges, architecture diagram, performance charts (light and dark), terminal screenshots and a dashboard screenshot from real runs, and a security section (EN / IT). Regenerate with `scripts/make_figures.py` and `scripts/make_screenshots.py`.

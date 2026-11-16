@@ -1,5 +1,5 @@
 # Tesseract-Fabric 🚀
-### Pure-Rust Distributed AI Inference Engine (v1.0.0)
+### Pure-Rust Distributed AI Inference Engine (v1.1.0)
 
 <p>
   <a href="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg"></a>
@@ -55,7 +55,7 @@ No hand-written topology is needed (`src/cluster/discovery.rs`):
 ### 🎬 See it run
 Real runs, recorded by `scripts/make_screenshots.py` (nothing is staged; the commands shown are the ones executed).
 
-**Chat with Llama 3.2 1B on an in-process 4-node cluster.** The speed shown (20.7 tok/s) was recorded while an Android emulator kept ten cores busy; on a quiet M3 Max the same command runs at ≈ 41 tok/s.
+**Chat with Llama 3.2 1B on an in-process 4-node cluster** (Apple M3 Max, 40.4 tok/s).
 
 ![tesseract-node --role chat on Llama-3.2-1B](docs/images/chat.svg)
 
@@ -148,7 +148,7 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 - **Resource reporting**: nodes advertise memory *available now* (Linux `MemAvailable`; macOS computed like Activity Monitor), not installed RAM.
 
 ### 📊 Status
-- **110/110 tests** (100 at v1.0.0, plus the security hardening since), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
+- **110/110 tests** (100 in v1.0.0, plus 10 security tests in v1.1.0), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
 - **Exact distributed inference**: 4-rank H-TEP matches a single node on 40/40 tokens and 40/40 logit rows for SmolLM2, Qwen2.5, Qwen3 and Llama 3.2 (dense models; MoE expert routing is not covered by the exactness guarantee).
 - **Benchmark scorecard**: 14/15 and 13/15 in the two final back-to-back runs.
   - Scenario 2 row 9 (speculation beating its own ablation on a heterogeneous cluster) reaches parity, 0.99–1.00×, at full host speed. This is the documented limit: the stage-0 cross-step lookahead, which the ablation also uses, already captures most of the speculative gain.
@@ -195,7 +195,7 @@ Non serve scrivere a mano la topologia (`src/cluster/discovery.rs`):
 ### 🎬 Guardalo in azione
 Esecuzioni reali, registrate da `scripts/make_screenshots.py` (niente di simulato: i comandi mostrati sono quelli eseguiti).
 
-**Chat con Llama 3.2 1B su un cluster di 4 nodi in-process.** La velocità mostrata (20,7 tok/s) è stata registrata mentre un emulatore Android teneva occupati dieci core; su un M3 Max scarico lo stesso comando gira a ≈ 41 tok/s.
+**Chat con Llama 3.2 1B su un cluster di 4 nodi in-process** (Apple M3 Max, 40,4 tok/s).
 
 ![tesseract-node --role chat su Llama-3.2-1B](docs/images/chat.svg)
 
@@ -288,7 +288,7 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 - **Risorse annunciate**: i nodi annunciano la memoria *disponibile in quel momento* (Linux `MemAvailable`; macOS calcolata come Monitoraggio Attività), non la RAM installata.
 
 ### 📊 Stato del progetto
-- **110/110 test** (100 alla v1.0.0, più l'irrobustimento della sicurezza successivo), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
+- **110/110 test** (100 nella v1.0.0, più 10 test di sicurezza nella v1.1.0), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
 - **Inferenza distribuita esatta**: H-TEP a 4 rank coincide con un singolo nodo su 40/40 token e 40/40 righe di logit per SmolLM2, Qwen2.5, Qwen3 e Llama 3.2 (modelli densi; il routing degli expert MoE non rientra nella garanzia di esattezza).
 - **Scorecard del benchmark**: 14/15 e 13/15 nelle due run finali consecutive.
   - La riga 9 dello Scenario 2 (la speculazione che batte la propria ablazione su un cluster eterogeneo) arriva alla parità, 0,99–1,00×, con l'host a piena velocità. È il limite documentato: il lookahead dello stage 0, usato anche dall'ablazione, cattura già quasi tutto il guadagno speculativo.
