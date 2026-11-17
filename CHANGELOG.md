@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased — encrypted node traffic, fault tolerance, x86 kernels
+
+### Security
+- **Encrypted node-to-node traffic** (`wire::crypto`, `wire::auth`). With a cluster secret of your own, every TesseractWire connection now runs a mutual HMAC-SHA256 handshake (protocol `TFA2`), then carries its frames in ChaCha20-Poly1305 records under a per-connection key from HKDF-SHA256.
+  - A modified, dropped, replayed or reordered record closes the connection.
+  - SHA-256, HMAC, HKDF, ChaCha20, Poly1305 and the AEAD are implemented in-tree (still zero crates). They are checked against the FIPS 180-4, RFC 4231, RFC 5869 and RFC 8439 vectors, and were differentially tested against OpenSSL on 300 random inputs (0 mismatches).
+  - Throughput is ≈ 500 MB/s per core.
+  - `--wire-plaintext` (on every node) opts out on trusted dedicated links. With the public default secret, traffic stays authenticated but unencrypted.
+  - **Nodes of 1.1.0 and this version cannot connect to each other.**
+
+### Reliability
+- **A node lost mid-request no longer hangs the request or kills the slot.**
+  - The driver tracks peers whose connection ended (`EndpointShared::lost_peers`).
+  - `Driver::try_generate_stream` returns `ClusterError::NodeLost` within ≈ 0.3 s and sends `Reset` to the survivors.
+  - Worker endpoints are abortable: an abort (a `Reset` carrying `ABORT_MARK`; the ordinary `Reset` between requests is unchanged) interrupts any wait inside the running engine, and the worker drops it and returns to idle (`run_worker` catches the `Aborted` unwind).
+  - The server answers `cluster_error` (an SSE event, or a 503), never poisons the slot lock, and re-plans without the dead node within ≈ 3.5 s, 3 s of them spent waiting for missing beacons.
+  - Before, the request waited 900 s, panicked and left its slot unusable.
+- **Fixed an intermittent server crash**: informational lines printed on stdout after the two address lines killed `tesseract-serve` with EPIPE when the reader had closed the pipe. This was the intermittent Linux CI failure in `production_v9`. They now go to stderr.
+- Slots poisoned by an earlier panic are recovered and re-planned; `Driver::stats` skips lost nodes instead of waiting 30 s for them.
+
+### Server
+- **FIFO slot queue**: requests waiting for an engine slot are served in arrival order, and sleep on a condition variable instead of polling every 2 ms.
+
+### Performance
+- **x86_64 AVX2/FMA f32 kernels** (runtime-detected): a dot product and register-tiled GEMMs (4×3, 6×2, 2×4 and 1×4 tiles for the 16 ymm registers) for the batch GEMM and the lane-pool striping. They replace a portable SSE2 path that ran row by row.
+
+### Tooling
+- **Physical cluster benchmark** (`docs/REAL_CLUSTER_BENCHMARK.md`): `tesseract-node --role coordinator … --rounds N --report FILE`.
+  - Every engine runs in interleaved rounds (median and min–max).
+  - Each link is measured before the runs (RTT and a 64 KB burst over the real, encrypted connections).
+  - The markdown report records version, platform, model, nodes and per-round results, with secrets redacted.
+- CI prints the native speed measurements (`Performance report` step).
+
+### Tests
+- `tests/faults.rs`: a worker process is SIGKILLed mid-stream; the stream must report `cluster_error`, the server must survive, and the next request must succeed on the survivors. Node traffic is encrypted in this test.
+- Crypto vectors, differential checks of incremental hashing and MACs, handshake and record-layer tests (tampering, replay, reordering, wrong key, mode mismatch).
+- An end-to-end test through a recording, tampering TCP relay: the plaintext never appears on the wire, and a flipped bit drops the connection.
+- A FIFO ordering test (it fails 3/3 with the old polling).
+- While writing the tests, two real bugs were found and fixed in the new code before release: partial-block buffering in SHA-256 / Poly1305 `update`, and a transcription error in one test vector caught by the OpenSSL cross-check.
+
 ## 1.1.0 — Security hardening and presentation (2026-11-16)
 
 ### Security

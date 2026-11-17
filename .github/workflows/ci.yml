@@ -54,3 +54,12 @@ jobs:
         env:
           TESSERACT_SKIP_PERF_ASSERTS: "1"
         run: cargo test --release --no-fail-fast
+
+      # informational: the speed measurements behind the thresholds above,
+      # printed on this runner's CPU (never fails the job)
+      - name: Performance report
+        if: always()
+        continue-on-error: true
+        run: |
+          cargo test --release --test math_verification tiled_batch -- --nocapture 2>&1 | grep -E "tiled batch GEMM" || true
+          cargo test --release --test production_v10 k_quant -- --nocapture 2>&1 | grep -E "GMAC/s" || true

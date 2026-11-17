@@ -2,6 +2,7 @@
 //! transport with physical link shaping.
 
 pub mod auth;
+pub mod crypto;
 pub mod multipath;
 pub mod protocol;
 pub mod transport;

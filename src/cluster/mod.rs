@@ -17,7 +17,7 @@ use crate::wire::multipath::LinkProfile;
 use crate::wire::protocol::{ByteReader, ByteWriter, FrameType};
 use crate::wire::transport::{mono_ns, wait_until_ns, Endpoint};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const DRIVER_ID: u16 = 0xFFF0;
 /// Endpoint id offsets for per-node auxiliary services.
@@ -1061,42 +1061,77 @@ impl ComputePermits {
 // --- worker / driver ------------------------------------------------------------
 
 /// Run a worker node: serve assignments until the driver disconnects.
+///
+/// The endpoint is abortable: when the driver sees a peer fail mid-request
+/// it sends an abort (`Reset` with `ABORT_MARK`), any wait inside the
+/// running engine throws
+/// [`crate::wire::transport::Aborted`], and the loop drops that engine and
+/// returns to idle, ready for the re-planned assignment.
 pub fn run_worker(ep: Endpoint) {
     crate::tensor::prefer_performance_cores();
+    quiet_abort_panics();
+    ep.set_abortable(true);
     loop {
-        let f = ep.recv();
-        match f.header.frame_type {
-            FrameType::Assign => {
-                let a = Assignment::decode(&f.payload);
-                a.configure(&ep);
-                match a.engine {
-                    EngineKind::ExoRing if a.stages.iter().any(|s| s.0 == ep.id()) => {
-                        baselines::ExoRingNode::new(&ep, &a).run(&ep)
-                    }
-                    // Not part of the ring: idle host.
-                    EngineKind::ExoRing => node::run_auxiliary(&ep),
-                    EngineKind::TensorParallel => {
-                        baselines::TensorParallelNode::new(&ep, &a).run(&ep)
-                    }
-                    EngineKind::Tesseract if a.stages.iter().any(|s| s.0 == ep.id()) => {
-                        node::TesseractNode::new(&ep, &a).run(&ep)
-                    }
-                    // Off-pipeline host (drafter / KV pool): its services do the work.
-                    EngineKind::Tesseract => node::run_auxiliary(&ep),
-                    EngineKind::TesseractHtep if a.stages.iter().any(|s| s.0 == ep.id()) => {
-                        htep::HtepNode::new(&ep, &a).run(&ep)
-                    }
-                    EngineKind::TesseractHtep => node::run_auxiliary(&ep),
-                }
-            }
-            FrameType::Shutdown => {
-                ep.shared.close();
-                return;
-            }
-            FrameType::ProbePing => discovery::answer_probe(&ep, &f.payload),
-            _ => {}
+        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_step(&ep)));
+        match step {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) if e.is::<crate::wire::transport::Aborted>() => {}
+            Err(e) => std::panic::resume_unwind(e),
         }
     }
+}
+
+/// One idle-loop step of a worker; false once it is shut down.
+fn worker_step(ep: &Endpoint) -> bool {
+    let f = ep.recv();
+    match f.header.frame_type {
+        FrameType::Assign => {
+            let a = Assignment::decode(&f.payload);
+            a.configure(ep);
+            match a.engine {
+                EngineKind::ExoRing if a.stages.iter().any(|s| s.0 == ep.id()) => {
+                    baselines::ExoRingNode::new(ep, &a).run(ep)
+                }
+                // Not part of the ring: idle host.
+                EngineKind::ExoRing => node::run_auxiliary(ep),
+                EngineKind::TensorParallel => baselines::TensorParallelNode::new(ep, &a).run(ep),
+                EngineKind::Tesseract if a.stages.iter().any(|s| s.0 == ep.id()) => {
+                    node::TesseractNode::new(ep, &a).run(ep)
+                }
+                // Off-pipeline host (drafter / KV pool): its services do the work.
+                EngineKind::Tesseract => node::run_auxiliary(ep),
+                EngineKind::TesseractHtep if a.stages.iter().any(|s| s.0 == ep.id()) => {
+                    htep::HtepNode::new(ep, &a).run(ep)
+                }
+                EngineKind::TesseractHtep => node::run_auxiliary(ep),
+            }
+            true
+        }
+        FrameType::Shutdown => {
+            ep.shared.close();
+            false
+        }
+        FrameType::ProbePing => {
+            discovery::answer_probe(ep, &f.payload);
+            true
+        }
+        _ => true,
+    }
+}
+
+/// Keep the default panic report for real panics, but stay silent for the
+/// deliberate [`crate::wire::transport::Aborted`] unwinds.
+fn quiet_abort_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !info.payload().is::<crate::wire::transport::Aborted>() {
+                prev(info);
+            }
+        }));
+    });
 }
 
 /// Send the `AssignAck` once a node is configured.
@@ -1127,12 +1162,48 @@ pub fn reply_stats(ep: &Endpoint, mut s: NodeStats) {
 
 pub struct Driver {
     pub ep: Endpoint,
+    /// The last assignment sent (its nodes are watched during requests).
+    assigned: std::cell::RefCell<Option<Box<Assignment>>>,
+}
+
+/// Why a request could not complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClusterError {
+    /// A node of the engine disconnected mid-request (crash, kill, network).
+    NodeLost(u16),
+    /// No progress for the stall timeout.
+    Stalled,
+    /// The request could not be sent to the head node.
+    Send(String),
+}
+
+impl std::fmt::Display for ClusterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClusterError::NodeLost(n) => write!(f, "cluster node {n} was lost during the request"),
+            ClusterError::Stalled => {
+                write!(f, "the cluster made no progress before the stall timeout")
+            }
+            ClusterError::Send(e) => write!(f, "could not reach the head node: {e}"),
+        }
+    }
+}
+
+/// No-progress timeout of a request (`TESSERACT_STALL_SECS`, default 900).
+fn stall_timeout() -> Duration {
+    Duration::from_secs(
+        std::env::var("TESSERACT_STALL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(900),
+    )
 }
 
 impl Driver {
     pub fn bind(addr: &str) -> std::io::Result<Self> {
         Ok(Driver {
             ep: Endpoint::bind(DRIVER_ID, addr)?,
+            assigned: std::cell::RefCell::new(None),
         })
     }
 
@@ -1148,6 +1219,7 @@ impl Driver {
             self.ep.shared.set_links(*id, vec![LinkProfile::unshaped()]);
         }
         let payload = a.encode();
+        *self.assigned.borrow_mut() = Some(Box::new(a.clone()));
         for (id, _) in &targets {
             self.ep
                 .send_payload(*id, FrameType::Assign, 0, 0, payload.clone())
@@ -1181,6 +1253,85 @@ impl Driver {
         GenerateResult::decode(&f.payload)
     }
 
+    /// A node of the current assignment whose connection was lost, if any.
+    pub fn lost_node(&self) -> Option<u16> {
+        let lost = self.ep.shared.lost_peers();
+        let a = self.assigned.borrow();
+        a.as_ref()?
+            .nodes
+            .iter()
+            .map(|n| n.id)
+            .find(|id| lost.contains(id))
+    }
+
+    /// [`Self::generate_stream`] that survives node failures: it returns an
+    /// error as soon as a node of the engine disconnects (or nothing moves
+    /// for the stall timeout), after sending `Reset` to the survivors so
+    /// they abandon the request and return to idle, ready for a re-plan.
+    pub fn try_generate_stream(
+        &self,
+        head: u16,
+        req: &GenerateRequest,
+        ext: &GenerateExt,
+        on_burst: &mut dyn FnMut(&TokenBurst),
+    ) -> Result<GenerateResult, ClusterError> {
+        if let Some(n) = self.lost_node() {
+            return Err(ClusterError::NodeLost(n));
+        }
+        let mut payload = req.encode();
+        payload.extend(ext.encode());
+        self.ep
+            .send_payload(head, FrameType::Generate, 0, 0, payload)
+            .map_err(|e| ClusterError::Send(e.to_string()))?;
+        let (stall, mut last) = (stall_timeout(), Instant::now());
+        loop {
+            let f = self.ep.recv_match_timeout(
+                &|f| {
+                    matches!(
+                        f.header.frame_type,
+                        FrameType::GenerateResult | FrameType::TokenStream
+                    )
+                },
+                Duration::from_millis(250),
+            );
+            match f {
+                Some(f) if f.header.frame_type == FrameType::TokenStream => {
+                    last = Instant::now();
+                    on_burst(&TokenBurst::decode(&f.payload));
+                }
+                Some(f) => return Ok(GenerateResult::decode(&f.payload)),
+                None => {
+                    let err = match self.lost_node() {
+                        Some(n) => ClusterError::NodeLost(n),
+                        None if last.elapsed() > stall => ClusterError::Stalled,
+                        None => continue,
+                    };
+                    self.abort_request();
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    /// Tell every node of the current assignment that is still connected to
+    /// abandon the request in flight (they return to idle).
+    pub fn abort_request(&self) {
+        let lost = self.ep.shared.lost_peers();
+        if let Some(a) = self.assigned.borrow().as_ref() {
+            for (id, _) in assignment_targets(a) {
+                if !lost.contains(&id) {
+                    let _ = self.ep.send_payload(
+                        id,
+                        FrameType::Reset,
+                        0,
+                        0,
+                        vec![crate::wire::transport::ABORT_MARK],
+                    );
+                }
+            }
+        }
+    }
+
     /// Generate with controls; `on_burst` sees every verification step's
     /// tokens as they are accepted (when `ext.stream`).
     pub fn generate_stream(
@@ -1211,13 +1362,20 @@ impl Driver {
     }
 
     pub fn stats(&self, nodes: &[u16]) -> Vec<NodeStats> {
-        for &n in nodes {
+        // nodes whose connection was lost cannot answer
+        let lost = self.ep.shared.lost_peers();
+        let nodes: Vec<u16> = nodes
+            .iter()
+            .copied()
+            .filter(|n| !lost.contains(n))
+            .collect();
+        for &n in &nodes {
             let _ = self
                 .ep
                 .send_payload(n, FrameType::StatsRequest, 0, 0, vec![]);
         }
         let mut out = Vec::new();
-        for _ in nodes {
+        for _ in &nodes {
             match self.ep.recv_match_timeout(
                 &|f| f.header.frame_type == FrameType::Stats,
                 Duration::from_secs(30),

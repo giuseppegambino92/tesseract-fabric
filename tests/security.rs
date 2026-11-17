@@ -272,3 +272,108 @@ fn requests_waiting_for_a_slot_are_served_in_arrival_order() {
         "not served in arrival order"
     );
 }
+
+/// A TCP relay between a dialer and `target` that records the bytes the
+/// dialer sends and can flip one of them (a network eavesdropper / tamperer).
+fn relay(
+    target: std::net::SocketAddr,
+    flip_at: Option<usize>,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for c in l.incoming() {
+            let Ok(mut down) = c else { return };
+            let mut up = TcpStream::connect(target).unwrap();
+            let (mut down2, mut up2) = (down.try_clone().unwrap(), up.try_clone().unwrap());
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut up2, &mut down2);
+            });
+            let seen = seen2.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match down.read(&mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    let mut s = seen.lock().unwrap();
+                    let start = s.len();
+                    s.extend_from_slice(&buf[..n]);
+                    if let Some(at) = flip_at {
+                        if (start..start + n).contains(&at) {
+                            buf[at - start] ^= 0x01;
+                        }
+                    }
+                    drop(s);
+                    if up.write_all(&buf[..n]).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (addr, seen)
+}
+
+#[test]
+fn node_traffic_is_encrypted_and_tamper_evident_with_a_cluster_secret() {
+    let secret = "correct horse battery staple, 2026";
+    let cfg = auth::WireConfig::new(secret, true);
+    let marker: Vec<u8> = b"TOP-SECRET-ACTIVATIONS-".repeat(200);
+
+    // 1. through an eavesdropping relay: delivered, never visible
+    let rx = Endpoint::bind_with(20, "127.0.0.1:0", cfg.clone()).unwrap();
+    let (raddr, seen) = relay(rx.addr(), None);
+    let tx = Endpoint::bind_with(21, "127.0.0.1:0", cfg.clone()).unwrap();
+    tx.shared.set_addr(20, raddr);
+    tx.send(
+        20,
+        TesseractFrame::new(FrameType::Generate, 21, 20, marker.clone()),
+    )
+    .unwrap();
+    let got = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("frame delivered");
+    assert_eq!(got.payload, marker);
+    let wire = seen.lock().unwrap().clone();
+    assert!(wire.len() > marker.len(), "the relay saw the traffic");
+    assert!(
+        !wire.windows(23).any(|w| w == &marker[..23]),
+        "plaintext visible on the wire"
+    );
+
+    // 2. one flipped bit in the first record: the connection is dropped and
+    //    nothing is delivered (handshake = 21 + 32 bytes from the dialer)
+    let rx = Endpoint::bind_with(22, "127.0.0.1:0", cfg.clone()).unwrap();
+    let (raddr, _) = relay(rx.addr(), Some(21 + 32 + 30));
+    let tx = Endpoint::bind_with(23, "127.0.0.1:0", cfg.clone()).unwrap();
+    tx.shared.set_addr(22, raddr);
+    let _ = tx.send(
+        22,
+        TesseractFrame::new(FrameType::Generate, 23, 22, marker.clone()),
+    );
+    assert!(
+        rx.recv_timeout(Duration::from_millis(800)).is_none(),
+        "tampered traffic accepted"
+    );
+
+    // 3. one side configured without encryption cannot talk to the other
+    let rx = Endpoint::bind_with(24, "127.0.0.1:0", cfg.clone()).unwrap();
+    let tx = Endpoint::bind_with(25, "127.0.0.1:0", auth::WireConfig::new(secret, false)).unwrap();
+    tx.shared.set_addr(24, rx.addr());
+    assert!(
+        tx.send(
+            24,
+            TesseractFrame::new(FrameType::Generate, 25, 24, vec![1])
+        )
+        .is_err(),
+        "mismatched encryption mode connected"
+    );
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_none());
+}

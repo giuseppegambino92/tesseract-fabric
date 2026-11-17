@@ -16,7 +16,7 @@ use super::multipath::{LinkProfile, MultipathScheduler};
 use super::protocol::{flags, FrameType, TesseractFrame};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -99,9 +99,8 @@ pub struct LinkShaper {
 }
 
 impl LinkShaper {
-    fn spawn(stream: TcpStream, profile: LinkProfile) -> Arc<Self> {
+    fn spawn(mut w: BufWriter<Box<dyn Write + Send>>, profile: LinkProfile) -> Arc<Self> {
         let (tx, rx) = channel::<(u64, Vec<u8>)>();
-        let mut w = BufWriter::with_capacity(1 << 16, stream);
         thread::Builder::new()
             .name("tess-link-writer".into())
             .spawn(move || {
@@ -219,9 +218,31 @@ pub struct EndpointShared {
     reassembly: Mutex<HashMap<(u16, u64), Reassembly>>,
     closed: AtomicBool,
     local_peers: Mutex<std::collections::HashSet<u16>>,
+    /// Cluster key and encryption mode of this endpoint's connections.
+    wire: super::auth::WireConfig,
+    /// Peers whose connection to us ended unexpectedly (EOF or error).
+    lost: Mutex<std::collections::HashSet<u16>>,
+    /// A `Reset` arriving on the wire interrupts any wait on this endpoint
+    /// (see [`Aborted`]); off unless [`Endpoint::set_abortable`].
+    abortable: AtomicBool,
+    abort: AtomicBool,
 }
 
+/// Payload byte of a `Reset` that aborts an in-flight request.
+pub const ABORT_MARK: u8 = 0xAB;
+
+/// Panic payload thrown by a wait on an abortable endpoint when an abort
+/// (`Reset` with [`ABORT_MARK`]) arrives: the worker loop catches it, drops the interrupted engine and
+/// returns to idle (a generation interrupted because a peer failed).
+#[derive(Debug)]
+pub struct Aborted;
+
 impl EndpointShared {
+    /// Peers whose connection to this endpoint ended unexpectedly.
+    pub fn lost_peers(&self) -> std::collections::HashSet<u16> {
+        self.lost.lock().unwrap().clone()
+    }
+
     /// Mark a peer as same-host / control-plane: its traffic is not counted.
     pub fn set_local(&self, peer: u16) {
         self.local_peers.lock().unwrap().insert(peer);
@@ -271,12 +292,19 @@ impl EndpointShared {
             }
             let mut s = s.unwrap();
             s.set_nodelay(true)?;
-            // prove the cluster secret before sending any frame
-            super::auth::client_handshake(&mut s, &super::auth::cluster_key())?;
+            // prove the cluster secret before sending any frame; with a
+            // secret of our own every byte after this is a sealed record
+            let session = super::auth::client_handshake(&mut s, &self.wire)?;
+            let inner: Box<dyn Write + Send> = match session {
+                Some(key) => Box::new(super::auth::SealedWriter::new(s, key)),
+                None => Box::new(s),
+            };
+            let mut w = BufWriter::with_capacity(1 << 16, inner);
             let mut hello = TesseractFrame::new(FrameType::Hello, self.id, to, vec![li as u8]);
             hello.header.sequence_id = li as u64;
-            s.write_all(&hello.encode())?;
-            links.push(LinkShaper::spawn(s, *p));
+            w.write_all(&hello.encode())?;
+            w.flush()?;
+            links.push(LinkShaper::spawn(w, *p));
         }
         let pl = Arc::new(PeerLinks {
             scheduler: Mutex::new(MultipathScheduler::new(&profiles)),
@@ -408,8 +436,14 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// Bind a listener on `addr` (use port 0 for ephemeral).
+    /// Bind a listener on `addr` (use port 0 for ephemeral), with the
+    /// process-wide cluster key and mode ([`super::auth::configure`]).
     pub fn bind(id: u16, addr: &str) -> std::io::Result<Self> {
+        Self::bind_with(id, addr, super::auth::wire_config())
+    }
+
+    /// Bind with an explicit cluster key and encryption mode.
+    pub fn bind_with(id: u16, addr: &str, wire: super::auth::WireConfig) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
         let listen_addr = listener.local_addr()?;
         let (tx, rx) = channel();
@@ -425,9 +459,12 @@ impl Endpoint {
             reassembly: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             local_peers: Mutex::new(std::collections::HashSet::new()),
+            wire: wire.clone(),
+            lost: Mutex::new(std::collections::HashSet::new()),
+            abortable: AtomicBool::new(false),
+            abort: AtomicBool::new(false),
         });
         let sh = shared.clone();
-        let key = super::auth::cluster_key();
         thread::Builder::new()
             .name(format!("tess-accept-{id}"))
             .spawn(move || {
@@ -445,9 +482,15 @@ impl Endpoint {
                             // no frame is read from a peer that cannot prove
                             // the cluster secret
                             let mut conn = conn;
-                            if super::auth::server_handshake(&mut conn, &key).is_ok() {
-                                reader_loop(conn, tx, sh2);
-                            }
+                            let reader: Box<dyn Read + Send> =
+                                match super::auth::server_handshake(&mut conn, &sh2.wire) {
+                                    Ok(Some(key)) => {
+                                        Box::new(super::auth::OpenedReader::new(conn, key))
+                                    }
+                                    Ok(None) => Box::new(conn),
+                                    Err(_) => return,
+                                };
+                            reader_loop(reader, tx, sh2);
                         })
                         .ok();
                 }
@@ -481,15 +524,50 @@ impl Endpoint {
         self.shared.send_payload(to, ft, epoch, layer, payload)
     }
 
+    /// Let an abort (`Reset` with [`ABORT_MARK`]) interrupt this endpoint's waits
+    /// (worker nodes: an in-flight generation is abandoned when the driver
+    /// reports a failed peer).
+    pub fn set_abortable(&self, on: bool) {
+        self.shared.abortable.store(on, Ordering::SeqCst);
+    }
+
+    /// Throw [`Aborted`] if a `Reset` arrived since the last check. Frames of
+    /// the interrupted generation are dropped; control frames (assignment,
+    /// shutdown, probes) are kept.
+    fn check_abort(&self) {
+        if !self.shared.abort.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let keep = |f: &TesseractFrame| {
+            matches!(
+                f.header.frame_type,
+                FrameType::Assign | FrameType::Shutdown | FrameType::ProbePing
+            )
+        };
+        let mut d = self.deferred.borrow_mut();
+        d.retain(keep);
+        while let Ok(f) = self.rx.try_recv() {
+            if keep(&f) {
+                d.push_back(f);
+            }
+        }
+        drop(d);
+        std::panic::panic_any(Aborted);
+    }
+
     /// Next frame (deferred frames first).
     pub fn recv(&self) -> TesseractFrame {
+        self.check_abort();
         if let Some(f) = self.deferred.borrow_mut().pop_front() {
             return f;
         }
-        spin_recv(&self.rx).expect("endpoint inbox closed")
+        let f = spin_recv(&self.rx).expect("endpoint inbox closed");
+        self.check_abort();
+        f
     }
 
     pub fn recv_timeout(&self, d: Duration) -> Option<TesseractFrame> {
+        self.check_abort();
         if let Some(f) = self.deferred.borrow_mut().pop_front() {
             return Some(f);
         }
@@ -502,6 +580,7 @@ impl Endpoint {
 
     /// Receive the first frame matching `pred`; others are deferred in order.
     pub fn recv_match(&self, pred: &dyn Fn(&TesseractFrame) -> bool) -> TesseractFrame {
+        self.check_abort();
         {
             let mut d = self.deferred.borrow_mut();
             if let Some(pos) = d.iter().position(pred) {
@@ -510,6 +589,7 @@ impl Endpoint {
         }
         loop {
             let f = spin_recv(&self.rx).expect("endpoint inbox closed");
+            self.check_abort();
             if pred(&f) {
                 return f;
             }
@@ -522,6 +602,7 @@ impl Endpoint {
         pred: &dyn Fn(&TesseractFrame) -> bool,
         timeout: Duration,
     ) -> Option<TesseractFrame> {
+        self.check_abort();
         {
             let mut d = self.deferred.borrow_mut();
             if let Some(pos) = d.iter().position(pred) {
@@ -535,8 +616,13 @@ impl Endpoint {
                 return None;
             }
             match self.rx.recv_timeout(left) {
-                Ok(f) if pred(&f) => return Some(f),
-                Ok(f) => self.deferred.borrow_mut().push_back(f),
+                Ok(f) => {
+                    self.check_abort();
+                    if pred(&f) {
+                        return Some(f);
+                    }
+                    self.deferred.borrow_mut().push_back(f);
+                }
                 Err(_) => return None,
             }
         }
@@ -544,6 +630,7 @@ impl Endpoint {
 
     /// Non-blocking poll for a matching frame.
     pub fn try_recv_match(&self, pred: &dyn Fn(&TesseractFrame) -> bool) -> Option<TesseractFrame> {
+        self.check_abort();
         while let Ok(f) = self.rx.try_recv() {
             self.deferred.borrow_mut().push_back(f);
         }
@@ -553,14 +640,38 @@ impl Endpoint {
     }
 }
 
-fn reader_loop(conn: TcpStream, tx: Sender<TesseractFrame>, sh: Arc<EndpointShared>) {
+fn reader_loop(conn: Box<dyn Read + Send>, tx: Sender<TesseractFrame>, sh: Arc<EndpointShared>) {
     let mut r = BufReader::with_capacity(1 << 16, conn);
     let mut link_idx = 0usize;
+    let mut source: Option<u16> = None;
     loop {
         let f = match TesseractFrame::read_from(&mut r) {
             Ok(f) => f,
-            Err(_) => return,
+            Err(_) => {
+                // the peer's connection ended: unless we are closing, it
+                // crashed, was killed or lost the network
+                if let Some(src) = source {
+                    if !sh.closed.load(Ordering::Relaxed) {
+                        sh.lost.lock().unwrap().insert(src);
+                    }
+                }
+                return;
+            }
         };
+        if source.is_none() {
+            // a (re)connected peer is no longer lost
+            source = Some(f.header.source);
+            sh.lost.lock().unwrap().remove(&f.header.source);
+        }
+        // only an *abort* (a Reset carrying ABORT_MARK, sent when a peer
+        // failed mid-request) interrupts waits; the ordinary Reset between
+        // requests keeps its graceful handling
+        if f.header.frame_type == FrameType::Reset
+            && f.payload.first() == Some(&ABORT_MARK)
+            && sh.abortable.load(Ordering::Acquire)
+        {
+            sh.abort.store(true, Ordering::Release);
+        }
         let recv_ns = mono_ns();
         match f.header.frame_type {
             FrameType::Hello => {

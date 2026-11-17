@@ -245,17 +245,22 @@ impl ServerState {
         loop {
             if t.1 == ticket {
                 for (i, s) in self.slots.iter().enumerate() {
-                    if let Ok(g) = s.try_lock() {
-                        t.1 += 1; // the next ticket may now look for a slot
-                        q.cv.notify_all();
-                        return (
-                            i,
-                            SlotGuard {
-                                guard: Some(g),
-                                queue: q,
-                            },
-                        );
-                    }
+                    // a slot poisoned by an earlier panic is still usable
+                    // (and is re-planned by the membership watcher)
+                    let g = match s.try_lock() {
+                        Ok(g) => g,
+                        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                        Err(std::sync::TryLockError::WouldBlock) => continue,
+                    };
+                    t.1 += 1; // the next ticket may now look for a slot
+                    q.cv.notify_all();
+                    return (
+                        i,
+                        SlotGuard {
+                            guard: Some(g),
+                            queue: q,
+                        },
+                    );
                 }
             }
             // woken when a slot is released or the queue advances; the
@@ -316,8 +321,10 @@ fn membership_loop(st: Arc<ServerState>) {
         std::thread::sleep(Duration::from_millis(300));
         let live = hj.listener.peers(hj.leave_after);
         for (si, slot) in st.slots.iter().enumerate() {
-            let Ok(mut eng) = slot.try_lock() else {
-                continue;
+            let mut eng = match slot.try_lock() {
+                Ok(g) => g,
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => continue,
             };
             let mut want: Vec<_> = live
                 .iter()
@@ -629,6 +636,24 @@ fn respond(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
     let _ = s.write_all(head.as_bytes());
     let _ = s.write_all(body);
     let _ = s.flush();
+}
+
+/// A request that the cluster could not complete: a `503` before any byte
+/// was sent, or an SSE error event closing a stream already under way.
+fn cluster_error(s: &mut TcpStream, streaming: bool, msg: &str) {
+    let err = Json::obj(vec![(
+        "error",
+        Json::obj(vec![
+            ("message", Json::str(msg)),
+            ("type", Json::str("cluster_error")),
+        ]),
+    )]);
+    if streaming {
+        let _ = s.write_all(format!("data: {}\n\ndata: [DONE]\n\n", err.dump()).as_bytes());
+        let _ = s.flush();
+    } else {
+        respond(s, 503, "application/json", err.dump().as_bytes());
+    }
 }
 
 fn json_error(s: &mut TcpStream, code: u16, msg: &str) {
@@ -1148,6 +1173,21 @@ fn chat(s: &mut TcpStream, st: &ServerState, req: &Request) {
             }
         }
     };
+    // a node of this slot already failed: answer now; the membership
+    // watcher drops it and re-plans the slot within a few seconds
+    if let Some(n) = guard.as_ref().and_then(|g| match &g.link {
+        EngineLink::Direct(d) => d.lost_node(),
+        EngineLink::Batched(_) => None,
+    }) {
+        drop(guard);
+        return cluster_error(
+            s,
+            false,
+            &format!(
+                "cluster node {n} is unavailable; the cluster is being re-planned, retry shortly"
+            ),
+        );
+    }
     let ids = all_endpoint_ids(&assignment);
     let before = match &guard {
         Some(eng) => eng.stats(ids.clone()),
@@ -1208,15 +1248,30 @@ fn chat(s: &mut TcpStream, st: &ServerState, req: &Request) {
                 stream_ok = s.write_all(c.as_bytes()).is_ok() && s.flush().is_ok();
             }
         };
-        match (&mut guard, &client) {
-            (Some(eng), _) => match &eng.link {
-                EngineLink::Direct(d) => {
-                    d.generate_stream(assignment.head, &greq, &ext, &mut on_burst)
-                }
-                EngineLink::Batched(c) => c.generate_stream(&greq, &ext, &mut on_burst),
-            },
-            (None, Some(c)) => c.generate_stream(&greq, &ext, &mut on_burst),
-            _ => unreachable!(),
+        // the slot guard lives outside this closure, so even an unexpected
+        // panic cannot poison the slot: it becomes an error response
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match (&mut guard, &client) {
+                (Some(eng), _) => match &eng.link {
+                    EngineLink::Direct(d) => {
+                        d.try_generate_stream(assignment.head, &greq, &ext, &mut on_burst)
+                    }
+                    EngineLink::Batched(c) => Ok(c.generate_stream(&greq, &ext, &mut on_burst)),
+                },
+                (None, Some(c)) => Ok(c.generate_stream(&greq, &ext, &mut on_burst)),
+                _ => unreachable!(),
+            }
+        }));
+        match run {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                drop(guard);
+                return cluster_error(s, cr.stream, &format!("{e}; retry shortly"));
+            }
+            Err(_) => {
+                drop(guard);
+                return cluster_error(s, cr.stream, "internal error while generating");
+            }
         }
     };
     let after = match &guard {

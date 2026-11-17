@@ -67,8 +67,24 @@ fn main() {
     // the cluster secret authenticates every node-to-node TCP connection
     // (`wire::auth`), not only discovery beacons
     let secret = arg(&args, "--cluster-secret");
+    let plaintext = args.iter().any(|a| a == "--wire-plaintext");
     if let Some(s) = secret.as_deref() {
-        tesseract_fabric::wire::auth::set_cluster_secret(s);
+        // authenticates node connections and, with a secret of our own,
+        // encrypts them (ChaCha20-Poly1305) unless --wire-plaintext
+        tesseract_fabric::wire::auth::configure(s, plaintext);
+        if matches!(
+            arg(&args, "--role").as_deref(),
+            Some("worker") | Some("coordinator")
+        ) {
+            eprintln!(
+                "node traffic: authenticated{}",
+                if plaintext || s == tesseract_fabric::wire::auth::DEFAULT_SECRET {
+                    ", not encrypted"
+                } else {
+                    " and encrypted (ChaCha20-Poly1305)"
+                }
+            );
+        }
     }
     let exposed = arg(&args, "--listen")
         .and_then(|l| l.parse::<std::net::SocketAddr>().ok())
@@ -77,7 +93,7 @@ fn main() {
         eprintln!(
             "warning: listening beyond loopback with the public default cluster secret; \
              any host that can reach this port can join the cluster. Pass the same \
-             --cluster-secret to every node, and use WireGuard / Tailscale on untrusted networks."
+             --cluster-secret to every node (it also turns on encryption of node traffic)."
         );
     }
     match arg(&args, "--role").as_deref() {
@@ -559,20 +575,41 @@ fn coordinator(args: &[String]) {
         plan.coordinator,
         plan.drafter
     );
+    let rounds: usize = arg(args, "--rounds")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    // measured links (RTT pings + 64 KB burst over the real endpoints)
+    let measured: Vec<Option<tesseract_fabric::cluster::discovery::LinkMeasurement>> = ids
+        .iter()
+        .map(|&i| tesseract_fabric::cluster::discovery::probe(&driver, i, peers[i as usize]))
+        .collect();
+    for (i, m) in measured.iter().enumerate() {
+        match m {
+            Some(m) => println!(
+                "link to node {i}: RTT {:.0} µs · {:.2} Gb/s (measured)",
+                m.rtt_us, m.bandwidth_gbps
+            ),
+            None => println!("link to node {i}: probe failed"),
+        }
+    }
     let prompt: Vec<u32> = (0..16).map(|i| (i * 977 % cfg.vocab) as u32).collect();
-    println!("\n| Engine | tok/s | ms/token | tokens/epoch | network KB/token |\n|---|---:|---:|---:|---:|");
+    // one assignment per engine (or why it cannot run)
+    let mut runs: Vec<(EngineKind, Result<Assignment, String>)> = Vec::new();
     for engine in engines {
         if engine == EngineKind::TensorParallel
             && (!cfg.n_heads.is_multiple_of(peers.len())
                 || !cfg.n_kv_heads.is_multiple_of(peers.len()))
         {
-            println!(
-                "| {} | n/a — {} q / {} kv heads do not divide across {} ranks | | | |",
-                engine.name(),
-                cfg.n_heads,
-                cfg.n_kv_heads,
-                peers.len()
-            );
+            runs.push((
+                engine,
+                Err(format!(
+                    "{} q / {} kv heads do not divide across {} ranks",
+                    cfg.n_heads,
+                    cfg.n_kv_heads,
+                    peers.len()
+                )),
+            ));
             continue;
         }
         let (stages, head) = match engine {
@@ -600,53 +637,157 @@ fn coordinator(args: &[String]) {
                 plan.coordinator,
             ),
         };
-        let a = Assignment {
+        runs.push((
             engine,
-            model: cfg.clone(),
-            nodes: ids
-                .iter()
-                .map(|&i| NodeSetup {
-                    id: i,
-                    addr: peers[i as usize],
-                    slowdown: slow[i as usize],
-                    kv_capacity: kv_caps[i as usize],
-                })
-                .collect(),
-            links: links.clone(),
-            stages,
-            head,
-            hot_capacity: cfg
-                .moe
-                .as_ref()
-                .map(|m| (m.n_experts * 3 / 4) as u16)
-                .unwrap_or(0),
-            inject_context: 0,
-            tess: tess.clone(),
-            driver_addr: driver.addr(),
-            service_addrs: service_addrs.clone(),
-        };
-        driver.assign(&a);
-        let r = driver.generate(
-            head,
-            &GenerateRequest {
-                prompt: prompt.clone(),
-                max_new: tokens,
-                seed: 7,
-                temperature,
-                record_logits: false,
-            },
-        );
-        let stats = driver.stats(&ids);
-        driver.reset(&a);
-        let n = r.tokens.len().max(1) as f64;
-        let s = r.decode_ns as f64 * 1e-9;
-        println!(
-            "| {} | {:.1} | {:.2} | {:.2} | {:.2} |",
-            engine.name(),
-            n / s,
-            s * 1e3 / n,
-            n / r.per_epoch.len().max(1) as f64,
-            stats.iter().map(|x| x.bytes_sent).sum::<u64>() as f64 / 1024.0 / n
-        );
+            Ok(Assignment {
+                engine,
+                model: cfg.clone(),
+                nodes: ids
+                    .iter()
+                    .map(|&i| NodeSetup {
+                        id: i,
+                        addr: peers[i as usize],
+                        slowdown: slow[i as usize],
+                        kv_capacity: kv_caps[i as usize],
+                    })
+                    .collect(),
+                links: links.clone(),
+                stages,
+                head,
+                hot_capacity: cfg
+                    .moe
+                    .as_ref()
+                    .map(|m| (m.n_experts * 3 / 4) as u16)
+                    .unwrap_or(0),
+                inject_context: 0,
+                tess: tess.clone(),
+                driver_addr: driver.addr(),
+                service_addrs: service_addrs.clone(),
+            }),
+        ));
+    }
+    // interleaved rounds: every engine once per round, so drifting load on
+    // the machines or the network hits all engines alike
+    // per engine: (tok/s, ms/token, tokens/epoch, network KB/token) per round
+    let mut results: Vec<Vec<[f64; 4]>> = vec![Vec::new(); runs.len()];
+    let mut loads = Vec::new();
+    for round in 0..rounds {
+        loads.push(tesseract_fabric::cluster::discovery::load_average());
+        for (k, (engine, a)) in runs.iter().enumerate() {
+            let Ok(a) = a else { continue };
+            driver.assign(a);
+            let r = driver.generate(
+                a.head,
+                &GenerateRequest {
+                    prompt: prompt.clone(),
+                    max_new: tokens,
+                    seed: 7,
+                    temperature,
+                    record_logits: false,
+                },
+            );
+            let stats = driver.stats(&ids);
+            driver.reset(a);
+            let n = r.tokens.len().max(1) as f64;
+            let s = r.decode_ns as f64 * 1e-9;
+            let row = [
+                n / s,
+                s * 1e3 / n,
+                n / r.per_epoch.len().max(1) as f64,
+                stats.iter().map(|x| x.bytes_sent).sum::<u64>() as f64 / 1024.0 / n,
+            ];
+            eprintln!(
+                "round {}/{rounds} {}: {:.1} tok/s",
+                round + 1,
+                engine.name(),
+                row[0]
+            );
+            results[k].push(row);
+        }
+    }
+    let median = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    let mut table = format!(
+        "| Engine | tok/s, median of {rounds} | min–max | ms/token | tokens/epoch | network KB/token |\n|---|---:|---:|---:|---:|---:|\n"
+    );
+    for (k, (engine, a)) in runs.iter().enumerate() {
+        match a {
+            Err(why) => table.push_str(&format!("| {} | n/a — {why} | | | | |\n", engine.name())),
+            Ok(_) => {
+                let col = |c: usize| results[k].iter().map(|r| r[c]).collect::<Vec<_>>();
+                let tps = col(0);
+                let (lo, hi) = tps
+                    .iter()
+                    .fold((f64::MAX, 0.0f64), |(l, h), &x| (l.min(x), h.max(x)));
+                table.push_str(&format!(
+                    "| {} | {:.1} | {lo:.1}–{hi:.1} | {:.2} | {:.2} | {:.2} |\n",
+                    engine.name(),
+                    median(&tps),
+                    median(&col(1)),
+                    median(&col(2)),
+                    median(&col(3))
+                ));
+            }
+        }
+    }
+    println!("\n{table}");
+    if let Some(path) = arg(args, "--report") {
+        // never write secrets into a report meant to be shared
+        let mut shown: Vec<String> = Vec::new();
+        let mut hide = false;
+        for a in args {
+            shown.push(if hide { "<redacted>".into() } else { a.clone() });
+            hide = matches!(a.as_str(), "--cluster-secret" | "--api-key");
+        }
+        let mut md = String::from("# tesseract-fabric physical cluster benchmark\n\n");
+        md.push_str(&format!(
+            "* Command: `{}`\n* Coordinator: {} / {} · tesseract-fabric {}\n* Model: {} layers, d_model {}, vocab {} · {tokens} new tokens · temperature {temperature} · {rounds} interleaved rounds\n* Links: {}\n* Coordinator 1-minute load at each round: {}\n\n",
+            shown.join(" "),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            env!("CARGO_PKG_VERSION"),
+            cfg.n_layers,
+            cfg.d_model,
+            cfg.vocab,
+            if emulate { "emulated from the device profiles" } else { "the real network (no shaping, no compute slowdown)" },
+            loads.iter().map(|l| format!("{l:.2}")).collect::<Vec<_>>().join(", ")
+        ));
+        md.push_str(&format!(
+            "## Nodes\n\nLinks measured from the coordinator before the runs (3 echo pings for RTT, one 64 KB burst for bandwidth) over {} connections.\n\n| Node | Address | Declared profile | Measured RTT (µs) | Measured bandwidth (Gb/s) |\n|---|---|---|---:|---:|\n",
+            if tesseract_fabric::wire::auth::wire_config().encrypt { "encrypted" } else { "plaintext" }
+        ));
+        for (i, m) in measured.iter().enumerate() {
+            md.push_str(&format!(
+                "| {i} | {} | {} | {} | {} |\n",
+                peers[i],
+                specs[i].name,
+                m.as_ref()
+                    .map(|m| format!("{:.0}", m.rtt_us))
+                    .unwrap_or("—".into()),
+                m.as_ref()
+                    .map(|m| format!("{:.2}", m.bandwidth_gbps))
+                    .unwrap_or("—".into())
+            ));
+        }
+        md.push_str(&format!("\n## Results\n\n{table}\n## Per-round tok/s\n\n"));
+        for (k, (engine, a)) in runs.iter().enumerate() {
+            if a.is_err() {
+                continue;
+            }
+            md.push_str(&format!(
+                "* {}: {}\n",
+                engine.name(),
+                results[k]
+                    .iter()
+                    .map(|r| format!("{:.1}", r[0]))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        std::fs::write(&path, md).expect("write --report");
+        println!("report written to {path}");
     }
 }

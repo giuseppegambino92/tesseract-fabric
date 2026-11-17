@@ -7,16 +7,16 @@
 //!                   [--engine auto|htep|pipeline] [--codec lossless|klt|fp16] [--max-tokens 256]
 //!                   [--sessions N] [--draft-model <small.gguf>]
 //!                   [--api-key KEY | --no-auth] [--cors-origin ORIGIN]
-//!                   [--max-connections 64] [--max-per-client 16]
+//!                   [--max-connections 64] [--max-per-client 16] [--wire-plaintext]
 //!
 //! Security: `--api-key` (or `TESSERACT_API_KEY`) makes every `/v1/*`
 //! endpoint require `Authorization: Bearer KEY`; open the dashboard as
 //! `http://host:port/#key=KEY`. Listening on a non-loopback address without
 //! a key is refused unless `--no-auth` is given explicitly. CORS is off
 //! unless `--cors-origin` names the one origin to allow. `--cluster-secret`
-//! also authenticates every node-to-node connection (see `wire::auth`); use
-//! a reverse proxy for TLS and WireGuard / Tailscale for node traffic on
-//! networks you do not trust.
+//! also authenticates every node-to-node connection and encrypts it with
+//! ChaCha20-Poly1305 (`--wire-plaintext` opts out for trusted dedicated
+//! links; see `wire::auth`). Use a reverse proxy for HTTPS.
 //!
 //! `--sessions N` turns on continuous batching: one H-TEP engine serves up to
 //! N concurrent requests in shared forward passes, each with its own KV slot
@@ -54,7 +54,7 @@ fn arg(args: &[String], k: &str) -> Option<String> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("usage: tesseract-serve [--http ip:port] [--model tiny|bench|PATH] [--quant FMT] [--local-nodes N | --discover N] [--slots S | --sessions N] [--draft-model PATH] [--engine auto|htep|pipeline] [--codec lossless|klt|fp16] [--cluster-secret S] [--discovery-bind ip:port] [--lan-broadcast] [--max-tokens N] [--api-key KEY | --no-auth] [--cors-origin ORIGIN] [--max-connections N] [--max-per-client N]");
+        eprintln!("usage: tesseract-serve [--http ip:port] [--model tiny|bench|PATH] [--quant FMT] [--local-nodes N | --discover N] [--slots S | --sessions N] [--draft-model PATH] [--engine auto|htep|pipeline] [--codec lossless|klt|fp16] [--cluster-secret S] [--discovery-bind ip:port] [--lan-broadcast] [--max-tokens N] [--api-key KEY | --no-auth] [--cors-origin ORIGIN] [--max-connections N] [--max-per-client N] [--wire-plaintext]");
         return;
     }
     tesseract_fabric::tensor::prefer_performance_cores();
@@ -138,8 +138,10 @@ fn main() {
     }
     let secret = arg(&args, "--cluster-secret").unwrap_or_else(|| "tesseract-local".into());
     let key = ClusterKey::from_secret(&secret);
-    // the same secret authenticates every node-to-node TCP connection
-    tesseract_fabric::wire::auth::set_cluster_secret(&secret);
+    // the same secret authenticates every node-to-node TCP connection and,
+    // unless it is the public default or --wire-plaintext is given, encrypts it
+    let wire_plaintext = args.iter().any(|a| a == "--wire-plaintext");
+    tesseract_fabric::wire::auth::configure(&secret, wire_plaintext);
     let remote: Option<usize> = arg(&args, "--discover").and_then(|s| s.parse().ok());
     let n = remote.unwrap_or_else(|| {
         arg(&args, "--local-nodes")
@@ -284,8 +286,11 @@ fn main() {
     } else {
         println!("discovery on udp {} (custom cluster secret)", listener.addr);
     }
-    // after the two address lines, which callers parse in this order
-    println!(
+    // stdout carries only the two address lines above (callers read them and
+    // may close the pipe; a later println! would then kill the server with
+    // EPIPE): everything else is logged on stderr
+    eprintln!("node traffic: {}", node_traffic(&secret, wire_plaintext));
+    eprintln!(
         "http auth: {}",
         if api_key.is_some() {
             "API key required on /v1/* (dashboard: open /#key=<KEY>)"
@@ -298,4 +303,15 @@ fn main() {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     server.serve();
+}
+
+/// How node-to-node connections are protected, for the startup log.
+fn node_traffic(secret: &str, plaintext: bool) -> &'static str {
+    if secret == tesseract_fabric::wire::auth::DEFAULT_SECRET {
+        "authenticated with the public default secret, not encrypted (set --cluster-secret)"
+    } else if plaintext {
+        "authenticated, not encrypted (--wire-plaintext)"
+    } else {
+        "authenticated and encrypted (ChaCha20-Poly1305, per-connection keys)"
+    }
 }

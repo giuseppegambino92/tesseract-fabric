@@ -5,7 +5,7 @@
   <a href="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-orange?logo=rust">
   <img alt="External crates" src="https://img.shields.io/badge/external%20crates-0-success">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-110%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-116%20passing-brightgreen">
   <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%7C%20Linux-supported-555">
   <img alt="SIMD" src="https://img.shields.io/badge/SIMD-NEON%20%7C%20AVX2-7c3aed">
   <img alt="API" src="https://img.shields.io/badge/API-OpenAI--compatible-412991">
@@ -21,7 +21,7 @@
 <a name="english"></a>
 ## 🇬🇧 English Documentation
 
-`tesseract-fabric` is a pure-Rust distributed inference runtime with **zero external crates**. It runs transformer LLMs across heterogeneous clusters (Apple Silicon Macs, Linux workstations, ARM64 devices) over real TCP sockets. A 4-rank H-TEP cluster reproduces a single node **bit for bit** on five real GGUF checkpoints. It passes 110 tests with `cargo fmt --check` and `cargo clippy -D warnings` clean.
+`tesseract-fabric` is a pure-Rust distributed inference runtime with **zero external crates**. It runs transformer LLMs across heterogeneous clusters (Apple Silicon Macs, Linux workstations, ARM64 devices) over real TCP sockets. A 4-rank H-TEP cluster reproduces a single node **bit for bit** on five real GGUF checkpoints. It passes 116 tests with `cargo fmt --check` and `cargo clippy -D warnings` clean.
 
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-light.svg#gh-light-mode-only)
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-dark.svg#gh-dark-mode-only)
@@ -78,7 +78,7 @@ Real runs, recorded by `scripts/make_screenshots.py` (nothing is staged; the com
 #### 1. Compile and test
 ```bash
 cargo build --release
-cargo test --release      # 110 tests; the first run downloads ≈ 2.9 GB of public GGUF checkpoints into models/
+cargo test --release      # 116 tests; the first run downloads ≈ 2.9 GB of public GGUF checkpoints into models/
 ```
 
 #### 2. Chat with a real checkpoint on an in-process 4-node cluster
@@ -113,7 +113,7 @@ Add `--lan-broadcast` on a trusted LAN to find peers without seeds. Open the das
 cargo run --release --bin tesseract-bench              # all scenarios → bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # shorter run
 ```
-Benchmark clusters emulate every node as threads on one host, with link shaping and compute slowdowns derived from device profiles. Results depend on the host's load and clock regime, as described in the v1.0.0 section.
+Benchmark clusters emulate every node as threads on one host, with link shaping and compute slowdowns derived from device profiles. Results depend on the host's load and clock regime, as described in the v1.0.0 section. To measure the same engines on **real machines**, follow [`docs/REAL_CLUSTER_BENCHMARK.md`](docs/REAL_CLUSTER_BENCHMARK.md): interleaved rounds, measured links and a shareable report (`tesseract-node --role coordinator … --rounds 5 --report`).
 
 
 <details open>
@@ -144,11 +144,17 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 - **CORS** is off unless `--cors-origin https://your.app` names the one origin to allow.
 - **Request limits**, enforced while bytes arrive: 64 KB head, 100 header lines, 8 MB body, no chunked bodies. Connections are capped at 64 (`--max-connections`) and 16 per client IP (`--max-per-client`); excess connections get an immediate `503`.
 - **TLS**: put a reverse proxy in front, e.g. Caddy: `your.host { reverse_proxy 127.0.0.1:8080 }` (SSE streams through).
-- **Node traffic**: `--cluster-secret` authenticates discovery beacons *and* every node-to-node TCP connection: a mutual challenge-response with fresh nonces and a 128-bit SipHash-2-4 MAC, so a host without the secret cannot connect or inject frames. Frames are **not encrypted**: on networks you do not trust, run the cluster over WireGuard / Tailscale. The default secret is public; always set your own beyond loopback.
+- **Node traffic**: `--cluster-secret` authenticates discovery beacons *and* every node-to-node TCP connection, and **encrypts** it.
+  - The handshake is a mutual HMAC-SHA256 challenge-response over fresh nonces, so a host without the secret cannot connect or inject frames.
+  - After it, frames travel in ChaCha20-Poly1305 records, each connection with its own HKDF-derived key; a modified, replayed or reordered record closes the connection.
+  - The primitives are implemented in-tree, checked against the RFC / FIPS test vectors and differentially against OpenSSL.
+  - With the public default secret, traffic is authenticated but not encrypted, since a key everyone knows would protect nothing. Always set your own secret beyond loopback.
+  - `--wire-plaintext` (on every node) skips encryption on trusted dedicated links faster than ≈ 4 Gb/s, about one core's encryption throughput.
+- **Fault tolerance**: if a node dies mid-request, the request ends with an explicit `cluster_error` within ≈ 0.3 s, instead of hanging. The other nodes abandon it and return to idle, the server stays up, and the dead node is dropped and the cluster re-planned within ≈ 3.5 s (3 s of missing beacons, then the re-plan). This is tested by killing a worker process mid-stream (`tests/faults.rs`).
 - **Resource reporting**: nodes advertise memory *available now* (Linux `MemAvailable`; macOS computed like Activity Monitor), not installed RAM.
 
 ### 📊 Status
-- **110/110 tests** (100 in v1.0.0, plus 10 security tests in v1.1.0), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
+- **116/116 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 since: encryption, fault injection, FIFO), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
 - **Exact distributed inference**: 4-rank H-TEP matches a single node on 40/40 tokens and 40/40 logit rows for SmolLM2, Qwen2.5, Qwen3 and Llama 3.2 (dense models; MoE expert routing is not covered by the exactness guarantee).
 - **Benchmark scorecard**: 14/15 and 13/15 in the two final back-to-back runs.
   - Scenario 2 row 9 (speculation beating its own ablation on a heterogeneous cluster) reaches parity, 0.99–1.00×, at full host speed. This is the documented limit: the stage-0 cross-step lookahead, which the ablation also uses, already captures most of the speculative gain.
@@ -161,7 +167,7 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 <a name="italiano"></a>
 ## 🇮🇹 Documentazione in Italiano
 
-`tesseract-fabric` è un runtime di inferenza distribuita in puro Rust, **senza alcun crate esterno**. Esegue LLM transformer su cluster eterogenei (Mac Apple Silicon, workstation Linux, dispositivi ARM64) tramite socket TCP reali. Un cluster H-TEP a 4 rank riproduce **bit per bit** un singolo nodo su cinque checkpoint GGUF reali. Passa 110 test, con `cargo fmt --check` e `cargo clippy -D warnings` puliti.
+`tesseract-fabric` è un runtime di inferenza distribuita in puro Rust, **senza alcun crate esterno**. Esegue LLM transformer su cluster eterogenei (Mac Apple Silicon, workstation Linux, dispositivi ARM64) tramite socket TCP reali. Un cluster H-TEP a 4 rank riproduce **bit per bit** un singolo nodo su cinque checkpoint GGUF reali. Passa 116 test, con `cargo fmt --check` e `cargo clippy -D warnings` puliti.
 
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-light.svg#gh-light-mode-only)
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-dark.svg#gh-dark-mode-only)
@@ -218,7 +224,7 @@ Esecuzioni reali, registrate da `scripts/make_screenshots.py` (niente di simulat
 #### 1. Compilare e testare
 ```bash
 cargo build --release
-cargo test --release      # 110 test; la prima esecuzione scarica ≈ 2,9 GB di checkpoint GGUF pubblici in models/
+cargo test --release      # 116 test; la prima esecuzione scarica ≈ 2,9 GB di checkpoint GGUF pubblici in models/
 ```
 
 #### 2. Chat con un checkpoint reale su un cluster di 4 nodi in-process
@@ -253,7 +259,7 @@ Su una LAN fidata, aggiungere `--lan-broadcast` per trovare i peer senza seed. L
 cargo run --release --bin tesseract-bench              # tutti gli scenari → bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # esecuzione breve
 ```
-I cluster di benchmark emulano ogni nodo come thread su un unico host, con link modellati e rallentamenti di calcolo derivati dai profili dei dispositivi. I risultati dipendono dal carico e dal regime di clock dell'host, come descritto nella sezione v1.0.0.
+I cluster di benchmark emulano ogni nodo come thread su un unico host, con link modellati e rallentamenti di calcolo derivati dai profili dei dispositivi. I risultati dipendono dal carico e dal regime di clock dell'host, come descritto nella sezione v1.0.0. Per misurare gli stessi motori su **macchine reali** segui [`docs/REAL_CLUSTER_BENCHMARK.md`](docs/REAL_CLUSTER_BENCHMARK.md) (in inglese): round interlacciati, link misurati e un report condivisibile (`tesseract-node --role coordinator … --rounds 5 --report`).
 
 
 <details open>
@@ -284,11 +290,17 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 - **CORS** è disattivato, a meno che `--cors-origin https://tua.app` indichi l'unica origine ammessa.
 - **Limiti sulle richieste**, applicati mentre i byte arrivano: 64 KB di intestazione, 100 righe di header, 8 MB di corpo, niente corpi chunked. Le connessioni sono limitate a 64 (`--max-connections`) e a 16 per IP client (`--max-per-client`); quelle in eccesso ricevono subito un `503`.
 - **TLS**: va messo un reverse proxy davanti, ad es. Caddy: `tuo.host { reverse_proxy 127.0.0.1:8080 }` (l'SSE passa senza problemi).
-- **Traffico tra nodi**: `--cluster-secret` autentica i beacon di discovery *e* ogni connessione TCP tra nodi, con un challenge-response reciproco su nonce freschi e un MAC SipHash-2-4 a 128 bit. Un host senza il segreto non può collegarsi né iniettare frame. I frame **non sono cifrati**: su reti non fidate il cluster va fatto passare su WireGuard / Tailscale. Il segreto predefinito è pubblico; oltre il loopback impostane sempre uno tuo.
+- **Traffico tra nodi**: `--cluster-secret` autentica i beacon di discovery *e* ogni connessione TCP tra nodi, e la **cifra**.
+  - L'handshake è un challenge-response reciproco HMAC-SHA256 su nonce freschi, quindi un host senza il segreto non può collegarsi né iniettare frame.
+  - Dopo l'handshake i frame viaggiano in record ChaCha20-Poly1305, con una chiave per connessione derivata con HKDF; un record alterato, ripetuto o riordinato chiude la connessione.
+  - Le primitive sono implementate nel progetto, verificate sui vettori di test RFC / FIPS e confrontate con OpenSSL.
+  - Con il segreto predefinito, che è pubblico, il traffico è autenticato ma non cifrato: una chiave nota a tutti non proteggerebbe nulla. Oltre il loopback impostane sempre uno tuo.
+  - `--wire-plaintext` (su tutti i nodi) disattiva la cifratura su link dedicati e fidati più veloci di ≈ 4 Gb/s, circa la velocità di cifratura di un core.
+- **Tolleranza ai guasti**: se un nodo muore durante una richiesta, la richiesta termina con un `cluster_error` esplicito entro ≈ 0,3 s, invece di restare appesa. Gli altri nodi la abbandonano e tornano liberi, il server resta attivo, e il nodo morto viene rimosso e il cluster ripianificato entro ≈ 3,5 s (3 s senza beacon, poi la ripianificazione). È verificato uccidendo un processo worker a metà dello streaming (`tests/faults.rs`).
 - **Risorse annunciate**: i nodi annunciano la memoria *disponibile in quel momento* (Linux `MemAvailable`; macOS calcolata come Monitoraggio Attività), non la RAM installata.
 
 ### 📊 Stato del progetto
-- **110/110 test** (100 nella v1.0.0, più 10 test di sicurezza nella v1.1.0), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
+- **116/116 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 successivi: cifratura, iniezione di guasti, FIFO), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
 - **Inferenza distribuita esatta**: H-TEP a 4 rank coincide con un singolo nodo su 40/40 token e 40/40 righe di logit per SmolLM2, Qwen2.5, Qwen3 e Llama 3.2 (modelli densi; il routing degli expert MoE non rientra nella garanzia di esattezza).
 - **Scorecard del benchmark**: 14/15 e 13/15 nelle due run finali consecutive.
   - La riga 9 dello Scenario 2 (la speculazione che batte la propria ablazione su un cluster eterogeneo) arriva alla parità, 0,99–1,00×, con l'host a piena velocità. È il limite documentato: il lookahead dello stage 0, usato anche dall'ablazione, cattura già quasi tutto il guadagno speculativo.
@@ -312,7 +324,7 @@ A self-contained distributed transformer-inference engine in pure Rust — **zer
 * **Exo-Ring-Pipeline**: layer-sharded ring pipeline, one token per pass, FP16 activations.
 * **RDMA-Tensor-Parallel**: Megatron-style tensor parallelism, two synchronous AllReduce barriers per layer.
 
-Everything below is implemented and executed, with no mocks or stubs: the tensor runtime and GEMM micro-kernels, the MoE transformer, the activation codec, speculative trees and lossless verification, expert pre-staging, paged KV with LSE-merged attention, the `TesseractWire` protocol with CRC32C, link-shaped multipath transport, the topology solver, the worker/coordinator daemons, and the benchmark harness. `cargo test --release` runs 110 tests (37 unit, 31 mathematical / kernel verifications, 14 multi-node socket tests, 6 V8.0 production tests on real files and sockets, 9 V9.0 tests on real third-party checkpoints, 6 V10.0 tests, 7 security tests). The first run downloads six public GGUF checkpoints (≈ 2.9 GB) into the git-ignored `models/` directory. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean, and `.github/workflows/ci.yml` runs all three on Linux and macOS.
+Everything below is implemented and executed, with no mocks or stubs: the tensor runtime and GEMM micro-kernels, the MoE transformer, the activation codec, speculative trees and lossless verification, expert pre-staging, paged KV with LSE-merged attention, the `TesseractWire` protocol with CRC32C, link-shaped multipath transport, the topology solver, the worker/coordinator daemons, and the benchmark harness. `cargo test --release` runs 116 tests (40 unit, 31 mathematical / kernel verifications, 14 multi-node socket tests, 6 V8.0 production tests on real files and sockets, 9 V9.0 tests on real third-party checkpoints, 6 V10.0 tests, 9 security tests, 1 fault-injection test). The first run downloads six public GGUF checkpoints (≈ 2.9 GB) into the git-ignored `models/` directory. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean, and `.github/workflows/ci.yml` runs all three on Linux and macOS.
 
 **v1.0.0 (Gold Release)** ([details](#v100-gold-release-drafting-on-the-studio-a-clock-regime-aware-planner-and-the-scenario-2-limit)):
 * zero external crates, 100/100 tests, and bit-for-bit single-node parity of 4-rank H-TEP on five real GGUF checkpoints (K-quants included);
@@ -353,7 +365,7 @@ It still uses zero external crates.
 
 ```bash
 cargo build --release
-cargo test --release                                   # 110 tests (first run downloads ≈ 2.9 GB of GGUF checkpoints into models/)
+cargo test --release                                   # 116 tests (first run downloads ≈ 2.9 GB of GGUF checkpoints into models/)
 cargo run --release --bin tesseract-bench              # all scenarios → stdout + bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # shorter run (48 tokens, 2 rounds, 2K/8K contexts)
 cargo run --release --bin tesseract-bench -- --scenarios 3 --contexts 2048,65536   # select scenarios / contexts
