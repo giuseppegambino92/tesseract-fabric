@@ -23,8 +23,15 @@
   - tensor parallel: 128.2 vs 135.8 tok/s (525 KB per token), about 5.6 %, because its all-reduce messages are on the critical path.
   - In an earlier interleaved series, run under heavy background load, 1.2.0's encryption cost tensor parallel about 6 % against about 4 % for this version.
 
+### Benchmarks
+- **First physical run** on two machines over a 5 GbE LAN (M3 Max laptop + Ryzen 9 9950X3D, CPU only), recorded in `docs/REAL_CLUSTER_BENCHMARK.md`:
+  - encrypted vs plaintext: no measurable difference;
+  - Tesseract-Fabric: 1.4–1.7× Exo's split and 2.4× tensor parallelism;
+  - against the faster machine alone: equal on SmolLM2-135M, about 13 % slower on Llama-3.2-1B, where the remote drafter's trees were not accepted.
+
 ### Fixed
 - **Physical benchmark report: "network KB/token" was wrong.** It divided the nodes' *cumulative* traffic, including every earlier round and the link probes, by one run's tokens, so it grew with the round number. It is now each run's own traffic. Reports made with 1.2.0 overstate this column.
+- **Physical benchmark: real checkpoints larger than ≈ 1 GB were refused** ("model does not fit cluster RAM"). Without `--emulate-links`, the coordinator still planned against the emulated benchmark's RAM (the preset × 1/200). It now uses the preset's RAM, so e.g. Llama-3.2-1B runs on two machines.
 
 ### Tests
 - The RFC 7748 vectors.

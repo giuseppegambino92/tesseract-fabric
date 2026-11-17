@@ -157,6 +157,10 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 ### 📊 Status
 - **122/122 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 in v1.2.0: encryption, fault injection, FIFO; 6 since: X25519, forward secrecy, parallel records, the OpenSSL-verified corpus), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
 - **Exact distributed inference**: 4-rank H-TEP matches a single node on 40/40 tokens and 40/40 logit rows for SmolLM2, Qwen2.5, Qwen3 and Llama 3.2 (dense models; MoE expert routing is not covered by the exactness guarantee).
+- **First physical run** (two machines on a 5 GbE LAN: an M3 Max laptop and a Ryzen 9 9950X3D, CPU only; [results](docs/REAL_CLUSTER_BENCHMARK.md#first-physical-run-2026-11-17)):
+  - Tesseract-Fabric keeps the layers on the faster machine and runs 1.4–1.7× the Exo-style ring and 2.4× tensor parallelism.
+  - With models that fit on one machine it matches (SmolLM2-135M) or trails by ≈ 13 % (Llama-3.2-1B) that machine alone.
+  - Encryption costs nothing measurable.
 - **Benchmark scorecard**: 14/15 and 13/15 in the two final back-to-back runs.
   - Scenario 2 row 9 (speculation beating its own ablation on a heterogeneous cluster) reaches parity, 0.99–1.00×, at full host speed. This is the documented limit: the stage-0 cross-step lookahead, which the ablation also uses, already captures most of the speculative gain.
   - Run 2's row 15 miss was a host-load spike.
@@ -304,6 +308,10 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 ### 📊 Stato del progetto
 - **122/122 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 nella v1.2.0: cifratura, iniezione di guasti, FIFO; 6 successivi: X25519, forward secrecy, record paralleli, il corpus verificato con OpenSSL), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
 - **Inferenza distribuita esatta**: H-TEP a 4 rank coincide con un singolo nodo su 40/40 token e 40/40 righe di logit per SmolLM2, Qwen2.5, Qwen3 e Llama 3.2 (modelli densi; il routing degli expert MoE non rientra nella garanzia di esattezza).
+- **Primo benchmark fisico** (due macchine in LAN a 5 GbE: un portatile M3 Max e un Ryzen 9 9950X3D, solo CPU; [risultati](docs/REAL_CLUSTER_BENCHMARK.md#first-physical-run-2026-11-17)):
+  - Tesseract-Fabric tiene i layer sulla macchina più veloce e va 1,4–1,7× l'anello stile Exo e 2,4× il tensor parallelism.
+  - Con modelli che stanno in una sola macchina eguaglia (SmolLM2-135M) o resta indietro di ≈ 13 % (Llama-3.2-1B) rispetto a quella macchina da sola.
+  - La cifratura non ha un costo misurabile.
 - **Scorecard del benchmark**: 14/15 e 13/15 nelle due run finali consecutive.
   - La riga 9 dello Scenario 2 (la speculazione che batte la propria ablazione su un cluster eterogeneo) arriva alla parità, 0,99–1,00×, con l'host a piena velocità. È il limite documentato: il lookahead dello stage 0, usato anche dall'ablazione, cattura già quasi tutto il guadagno speculativo.
   - La riga 15 mancata nella run 2 è dovuta a un picco di carico sull'host.

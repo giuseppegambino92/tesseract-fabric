@@ -88,3 +88,43 @@ tesseract-node --role coordinator --listen 127.0.0.1:0 --cluster-secret test-sec
     --peers 127.0.0.1:7100,127.0.0.1:7110,127.0.0.1:7120 --profile studio-m5max,studio-m5max,macbook-pro \
     --engine all --model tiny --tokens 32 --temperature 0 --rounds 3 --report smoke-report.md
 ```
+
+## First physical run (2026-11-17)
+
+Two real machines on the same LAN, run with this procedure (commit after 1.2.0, encrypted and `--wire-plaintext` runs alternated, 5 interleaved rounds each, two passes, 64 tokens, temperature 0):
+
+| Machine | Hardware | Network |
+|---|---|---|
+| A (coordinator + worker 0) | MacBook Pro, Apple M3 Max, 36 GB, macOS | 10 GbE |
+| B (worker 1) | AMD Ryzen 9 9950X3D (16 cores), 91 GB DDR5, Ubuntu 25.04 | 5 GbE (the link runs at 5 Gb/s) |
+
+Machine B also has an RTX 5090, which these runs do not use: the engines run on the CPU.
+
+**Single-node reference** (same build, `--role chat --local-nodes 1`):
+
+| Model | A alone | B alone |
+|---|---:|---:|
+| SmolLM2-135M Q4_K_M | 206 tok/s | 102 tok/s |
+| Llama-3.2-1B Q4_K_M | 40.1 tok/s | 19.1 tok/s |
+
+A is about 2× faster than B with this engine, so the runs declare `--profile studio-m5max,macbook-pro`. Those presets have a 2 : 1 memory-bandwidth ratio, matching the measurement; the solver only knows what the presets say.
+
+**Two machines, tok/s** (median of 5 rounds; the two passes shown as pass 1 / pass 2):
+
+| Model | Engine | Encrypted | Plaintext | Network KB/token |
+|---|---|---:|---:|---:|
+| Llama-3.2-1B | Tesseract-Fabric | 35.0 / 34.1 | 35.1 / 34.0 | 0.15 |
+| | Exo-Ring-Pipeline | 24.5 / 23.7 | 25.0 / 24.0 | 5.2 |
+| | RDMA-Tensor-Parallel | 14.1 / 14.7 | 14.2 / 16.4 | 321 |
+| SmolLM2-135M | Tesseract-Fabric | 206.5 / 206.8 | 207.7 / 200.8 | 0.14 |
+| | Exo-Ring-Pipeline | 118.6 / 122.8 | 117.7 / 121.5 | 1.6 |
+| | RDMA-Tensor-Parallel | n/a (9 heads do not divide across 2 ranks) | | |
+
+What this shows:
+- **Encryption costs nothing measurable** on a real 5 GbE link. Every encrypted/plaintext pair is within the round-to-round spread.
+- **Tesseract-Fabric plans the cluster around the faster machine.** All layers stay on A, and B serves draft trees. It runs 1.4–1.7× Exo's layer split and 2.4× tensor parallelism, which pay a network hop per token or per layer to a slower machine.
+- **It does not beat the faster machine alone.** These models fit in one machine:
+  - SmolLM2: 206 tok/s on two machines, the same as A alone.
+  - Llama-3.2-1B: 34–35 tok/s against 40 on A alone, **about 13 % slower**. B's drafts were not accepted (1.00 tokens per step), so the remote drafter only added round trips.
+  - Splitting a model across machines pays off when it does not fit in one; these runs do not test that case.
+- The coordinator's link probe (3 pings, one 64 KB burst) under-reads a 5 GbE link: 0.3–1.2 Gb/s reported. Treat its numbers as a sanity check, not a bandwidth measurement.

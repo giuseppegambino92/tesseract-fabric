@@ -481,7 +481,13 @@ fn coordinator(args: &[String]) {
                     profiles: links_between(profiles[i as usize], profiles[j as usize], false),
                 })
                 .collect();
-            profiles[i as usize].spec(i, ls)
+            let mut spec = profiles[i as usize].spec(i, ls);
+            if !emulate {
+                // real machines: plan against the device's RAM, not the
+                // emulated benchmark's scaled-down capacity
+                spec.available_ram_mb = profiles[i as usize].ram_mb;
+            }
+            spec
         })
         .collect();
     let slow = if emulate {
