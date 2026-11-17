@@ -317,7 +317,7 @@ fn node_traffic(secret: &str, plaintext: bool) -> &'static str {
     } else if plaintext {
         "authenticated, not encrypted (--wire-plaintext)"
     } else {
-        "authenticated and encrypted (ChaCha20-Poly1305, per-connection keys)"
+        "authenticated and encrypted (X25519 forward secrecy + ChaCha20-Poly1305)"
     }
 }
 

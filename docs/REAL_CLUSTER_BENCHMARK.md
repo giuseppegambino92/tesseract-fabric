@@ -29,7 +29,7 @@ tesseract-node --role worker --id <i> --listen 0.0.0.0:7000 --cluster-secret "$T
     [--gguf /path/to/model.gguf]
 ```
 
-Encryption (ChaCha20-Poly1305, ≈ 500 MB/s per core in this implementation) is enough for Ethernet and Wi-Fi. On a dedicated, trusted link faster than ≈ 4 Gb/s (e.g. Thunderbolt), it can become the bottleneck. Add `--wire-plaintext` on **every** node to measure without it, and say so when you publish.
+Encryption (X25519 key exchange with forward secrecy, then ChaCha20-Poly1305) costs about 1.4 GB/s (11 Gb/s) of one core; large records are split across up to 4 cores, reaching ≈ 3.7 GB/s (≈ 30 Gb/s) on an M3 Max. The report states the coordinator's own sealing throughput next to the measured links, so you can see whether encryption could limit them. To measure without it on a trusted dedicated link, add `--wire-plaintext` on **every** node and say so when you publish.
 
 ## 3. Run the coordinator
 

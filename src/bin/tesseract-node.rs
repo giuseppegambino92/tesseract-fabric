@@ -70,7 +70,7 @@ fn main() {
     let plaintext = args.iter().any(|a| a == "--wire-plaintext");
     if let Some(s) = secret.as_deref() {
         // authenticates node connections and, with a secret of our own,
-        // encrypts them (ChaCha20-Poly1305) unless --wire-plaintext
+        // encrypts them (X25519 + ChaCha20-Poly1305) unless --wire-plaintext
         tesseract_fabric::wire::auth::configure(s, plaintext);
         if matches!(
             arg(&args, "--role").as_deref(),
@@ -81,7 +81,7 @@ fn main() {
                 if plaintext || s == tesseract_fabric::wire::auth::DEFAULT_SECRET {
                     ", not encrypted"
                 } else {
-                    " and encrypted (ChaCha20-Poly1305)"
+                    " and encrypted (X25519 forward secrecy + ChaCha20-Poly1305)"
                 }
             );
         }
@@ -676,6 +676,11 @@ fn coordinator(args: &[String]) {
         for (k, (engine, a)) in runs.iter().enumerate() {
             let Ok(a) = a else { continue };
             driver.assign(a);
+            // node counters are cumulative: measure this run's traffic only
+            let sent = |stats: Vec<tesseract_fabric::cluster::NodeStats>| {
+                stats.iter().map(|x| x.bytes_sent).sum::<u64>()
+            };
+            let before = sent(driver.stats(&ids));
             let r = driver.generate(
                 a.head,
                 &GenerateRequest {
@@ -686,7 +691,7 @@ fn coordinator(args: &[String]) {
                     record_logits: false,
                 },
             );
-            let stats = driver.stats(&ids);
+            let bytes = sent(driver.stats(&ids)).saturating_sub(before);
             driver.reset(a);
             let n = r.tokens.len().max(1) as f64;
             let s = r.decode_ns as f64 * 1e-9;
@@ -694,7 +699,7 @@ fn coordinator(args: &[String]) {
                 n / s,
                 s * 1e3 / n,
                 n / r.per_epoch.len().max(1) as f64,
-                stats.iter().map(|x| x.bytes_sent).sum::<u64>() as f64 / 1024.0 / n,
+                bytes as f64 / 1024.0 / n,
             ];
             eprintln!(
                 "round {}/{rounds} {}: {:.1} tok/s",
@@ -744,7 +749,7 @@ fn coordinator(args: &[String]) {
         }
         let mut md = String::from("# tesseract-fabric physical cluster benchmark\n\n");
         md.push_str(&format!(
-            "* Command: `{}`\n* Coordinator: {} / {} · tesseract-fabric {}\n* Model: {} layers, d_model {}, vocab {} · {tokens} new tokens · temperature {temperature} · {rounds} interleaved rounds\n* Links: {}\n* Coordinator 1-minute load at each round: {}\n\n",
+            "* Command: `{}`\n* Coordinator: {} / {} · tesseract-fabric {}\n* Model: {} layers, d_model {}, vocab {} · {tokens} new tokens · temperature {temperature} · {rounds} interleaved rounds\n* Links: {}\n* Node traffic: {}\n* Coordinator 1-minute load at each round: {}\n\n",
             shown.join(" "),
             std::env::consts::OS,
             std::env::consts::ARCH,
@@ -753,6 +758,7 @@ fn coordinator(args: &[String]) {
             cfg.d_model,
             cfg.vocab,
             if emulate { "emulated from the device profiles" } else { "the real network (no shaping, no compute slowdown)" },
+            traffic_line(),
             loads.iter().map(|l| format!("{l:.2}")).collect::<Vec<_>>().join(", ")
         ));
         md.push_str(&format!(
@@ -790,4 +796,20 @@ fn coordinator(args: &[String]) {
         std::fs::write(&path, md).expect("write --report");
         println!("report written to {path}");
     }
+}
+
+/// The report's node-traffic line: mode, and for encrypted traffic this
+/// machine's record-layer throughput, to compare with the measured links.
+fn traffic_line() -> String {
+    use tesseract_fabric::wire::auth;
+    if !auth::wire_config().encrypt {
+        return "plaintext (authenticated handshake only)".into();
+    }
+    let gbps = auth::measure_seal_gbps();
+    format!(
+        "encrypted (X25519 + ChaCha20-Poly1305); the coordinator seals {:.2} GB/s = {:.1} Gb/s with {} thread(s) per connection",
+        gbps,
+        gbps * 8.0,
+        auth::crypto_threads()
+    )
 }

@@ -349,9 +349,9 @@ fn node_traffic_is_encrypted_and_tamper_evident_with_a_cluster_secret() {
     );
 
     // 2. one flipped bit in the first record: the connection is dropped and
-    //    nothing is delivered (handshake = 21 + 32 bytes from the dialer)
+    //    nothing is delivered (the dialer's handshake is 53 + 32 bytes)
     let rx = Endpoint::bind_with(22, "127.0.0.1:0", cfg.clone()).unwrap();
-    let (raddr, _) = relay(rx.addr(), Some(21 + 32 + 30));
+    let (raddr, _) = relay(rx.addr(), Some(53 + 32 + 30));
     let tx = Endpoint::bind_with(23, "127.0.0.1:0", cfg.clone()).unwrap();
     tx.shared.set_addr(22, raddr);
     let _ = tx.send(
@@ -362,6 +362,22 @@ fn node_traffic_is_encrypted_and_tamper_evident_with_a_cluster_secret() {
         rx.recv_timeout(Duration::from_millis(800)).is_none(),
         "tampered traffic accepted"
     );
+
+    // 2b. a man in the middle who swaps the dialer's ephemeral key (here: one
+    //     flipped bit of it) without the secret breaks the handshake
+    let rx = Endpoint::bind_with(26, "127.0.0.1:0", cfg.clone()).unwrap();
+    let (raddr, _) = relay(rx.addr(), Some(21 + 9));
+    let tx = Endpoint::bind_with(27, "127.0.0.1:0", cfg.clone()).unwrap();
+    tx.shared.set_addr(26, raddr);
+    assert!(
+        tx.send(
+            26,
+            TesseractFrame::new(FrameType::Generate, 27, 26, marker.clone()),
+        )
+        .is_err(),
+        "handshake with a substituted key-exchange value succeeded"
+    );
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_none());
 
     // 3. one side configured without encryption cannot talk to the other
     let rx = Endpoint::bind_with(24, "127.0.0.1:0", cfg.clone()).unwrap();

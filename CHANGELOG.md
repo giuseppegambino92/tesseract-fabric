@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — forward secrecy, faster and parallel record layer
+
+### Security
+- **Forward secrecy for node traffic** (handshake `TFA3`). Every connection now runs an ephemeral X25519 exchange inside the authenticated handshake.
+  - The session key is derived from the cluster secret *and* the X25519 shared secret, over a transcript of both nonces and both ephemeral keys.
+  - The ephemeral private keys live only for the handshake and are wiped afterwards, so a recorded session stays unreadable even to someone who later learns the cluster secret.
+  - Both MACs cover the ephemeral keys, so an attacker without the secret cannot substitute their own exchange (tested by flipping one bit of a key through a relay). Small-order values (an all-zero shared secret) are refused.
+  - X25519 (RFC 7748) is implemented in-tree: 51-bit limbs, a constant-time Montgomery ladder, ≈ 25 µs per scalar multiplication on an M3 Max. It passes the RFC vectors, including the 1000-iteration chain.
+  - Session keys are wiped when a connection closes.
+  - **Nodes of 1.2.0 and this version cannot connect to each other**: upgrade every node together.
+
+### Performance
+- **2.5× faster single-core record layer** (M3 Max, 1 MiB records: 574 → 1430 MB/s):
+  - ChaCha20 runs 8 blocks at a time, as two interleaved groups of four in NEON registers on aarch64 (931 → ≈ 2300 MB/s) and 8 lanes under AVX2 on x86_64;
+  - Poly1305 uses base 2⁶⁴ arithmetic (1661 → ≈ 3500 MB/s).
+- **Parallel records**: records are now split into 64 KiB segments, each with its own tag and nonce. Records of 256 KiB or more are sealed and opened on several threads (`TESSERACT_WIRE_THREADS`, default up to 4, at most half the cores): 2.5 GB/s with 2 threads, 3.7 GB/s with 4 (≈ 30 Gb/s).
+- `cargo run --release --example crypto_bench` measures all of this. Physical benchmark reports now state the coordinator's sealing throughput next to the measured links.
+- **End to end**: a real 3-process cluster on one M3 Max (loopback TCP, SmolLM2-135M, 5 interleaved rounds per run) measured encrypted against `--wire-plaintext`:
+  - Tesseract pipeline: 204.5 vs 205.5 tok/s (1.9 KB per token);
+  - Exo ring: 203.1 vs 212.3 tok/s (3.1 KB per token), within the round-to-round spread;
+  - tensor parallel: 128.2 vs 135.8 tok/s (525 KB per token), about 5.6 %, because its all-reduce messages are on the critical path.
+  - In an earlier interleaved series, run under heavy background load, 1.2.0's encryption cost tensor parallel about 6 % against about 4 % for this version.
+
+### Fixed
+- **Physical benchmark report: "network KB/token" was wrong.** It divided the nodes' *cumulative* traffic, including every earlier round and the link probes, by one run's tokens, so it grew with the round number. It is now each run's own traffic. Reports made with 1.2.0 overstate this column.
+
+### Tests
+- The RFC 7748 vectors.
+- Multi-block ChaCha20 checked against the one-block reference across every lane, tail and counter-wrap edge.
+- A frozen 400-case corpus (random and all-0xff keys and messages, lengths across every block and segment edge) for the AEAD, Poly1305 and X25519, verified case by case against OpenSSL with 0 mismatches. Every CI platform must reproduce it byte for byte, so the NEON, AVX2 and portable paths are all covered.
+- Handshake tests: refusal of a small-order key, the session key depends on the ephemeral exchange, and a man in the middle who alters an ephemeral key fails.
+- Record-layer tests: parallel 1 MiB records round-trip; a tampered middle segment, swapped segments and a truncated record are all rejected.
+
 ## 1.2.0 — Encrypted node traffic, fault tolerance, x86 kernels (2026-11-17)
 
 ### Security
