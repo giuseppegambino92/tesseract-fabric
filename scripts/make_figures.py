@@ -69,7 +69,7 @@ def frame(w, h, th, body, label):
 
 
 # --- 1. kernels: V9 vs v1.0, GMAC/s at one row ------------------------------
-# Source: bench_results_v10_0.md Section 6.1 (host load 3.4, M3 Max, one thread,
+# Source: benchmarks/bench_results_v10_0.md Section 6.1 (host load 3.4, M3 Max, one thread,
 # NEON sdot); V9 column = the V9.0 README figures quoted in the same table.
 KERNELS = [("Q8_0", 14.7, 26.4), ("Q4_0", 15.2, 25.1), ("Q5_0", 13.0, 20.7),
            ("Q4_K", 10.5, 30.0), ("Q6_K", 12.4, 24.9)]
@@ -103,7 +103,7 @@ def kernels(th):
         body.append(t(cx, y0 + ph + 22, fmt, 13, weight=600, anchor="middle", th=th))
         body.append(t(cx, y0 + ph + 40, f"{new / old:.1f}×", 12, "text2", anchor="middle", th=th))
     body.append(f'<line x1="{x0}" x2="{x0 + pw}" y1="{y0 + ph}" y2="{y0 + ph}" stroke="{th["border"]}" stroke-width="1"/>')
-    body.append(t(28, H - 14, "Source: bench_results_v10_0.md §6.1 (kernels unchanged since). Four-row tiles reach 46–59 GMAC/s.",
+    body.append(t(28, H - 14, "Source: benchmarks/bench_results_v10_0.md §6.1 (kernels unchanged since). Four-row tiles reach 46–59 GMAC/s.",
                   11, "muted", th=th))
     return frame(W, H, th, "".join(body), "Bar chart: kernel throughput per format, V9 vs v1.0")
 
@@ -138,7 +138,7 @@ def decode(th):
 
 
 # --- 3. continuous batching ----------------------------------------------------
-# Source: bench_results_v10_0.md Section 6.4 (Qwen2.5-0.5B on 2 H-TEP ranks).
+# Source: benchmarks/bench_results_v10_0.md Section 6.4 (Qwen2.5-0.5B on 2 H-TEP ranks).
 BATCH = [(1, 73.2), (2, 90.8), (4, 117.6), (8, 125.0)]
 
 
@@ -162,7 +162,7 @@ def batching(th):
         body.append(t(cx, y0 + ph - h - 8, f"{v:.1f} tok/s · {v / base:.2f}×", 12, weight=600, anchor="middle", th=th))
         body.append(t(cx, y0 + ph + 22, f"{n} concurrent request{'s' if n > 1 else ''}", 13, anchor="middle", th=th))
     body.append(f'<line x1="{x0}" x2="{x0 + pw}" y1="{y0 + ph}" y2="{y0 + ph}" stroke="{th["border"]}" stroke-width="1"/>')
-    body.append(t(28, H - 14, "Source: bench_results_v10_0.md §6.4. Requests share forward passes and one all-reduce per layer.",
+    body.append(t(28, H - 14, "Source: benchmarks/bench_results_v10_0.md §6.4. Requests share forward passes and one all-reduce per layer.",
                   11, "muted", th=th))
     return frame(W, H, th, "".join(body), "Bar chart: aggregate tokens per second by concurrent requests")
 

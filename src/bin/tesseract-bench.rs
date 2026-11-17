@@ -1719,7 +1719,7 @@ fn main() {
         .iter()
         .position(|a| a == "--out")
         .and_then(|i| args.get(i + 1).cloned())
-        .unwrap_or_else(|| "bench_results.md".into());
+        .unwrap_or_else(|| "benchmarks/bench_results.md".into());
     let t_all = Instant::now();
     let cfg = ModelConfig::bench_moe();
     let mut out = String::new();
@@ -1844,6 +1844,11 @@ fn main() {
     )
     .unwrap();
     println!("{out}");
+    if let Some(dir) = std::path::Path::new(&out_path).parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir).expect("create results directory");
+        }
+    }
     std::fs::write(&out_path, &out).expect("write results");
     eprintln!("results written to {out_path}");
 }

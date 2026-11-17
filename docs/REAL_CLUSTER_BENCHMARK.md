@@ -1,6 +1,6 @@
 # Physical cluster benchmark
 
-The benchmarks in `bench_results*.md` run every node as threads on one host, with emulated links and emulated device speeds. This procedure measures the same engines on **real machines over a real network**, and writes a report that records everything needed to reproduce or compare a run.
+The benchmarks in [`benchmarks/`](../benchmarks/README.md) run every node as threads on one host, with emulated links and emulated device speeds. This procedure measures the same engines on **real machines over a real network**, and writes a report that records everything needed to reproduce or compare a run.
 
 It compares, on the same machines and model:
 - **Exo-Ring-Pipeline**: a layer-sharded ring.

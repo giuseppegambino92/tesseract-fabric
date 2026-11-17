@@ -1,21 +1,22 @@
-# Tesseract-Fabric 🚀
-### Pure-Rust Distributed AI Inference Engine (v1.4.0)
+# Tesseract-Fabric
 
-<p>
-  <a href="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-orange?logo=rust">
-  <img alt="External crates" src="https://img.shields.io/badge/external%20crates-0-success">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-126%20passing-brightgreen">
-  <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%7C%20Linux-supported-555">
-  <img alt="SIMD" src="https://img.shields.io/badge/SIMD-NEON%20%7C%20AVX2-7c3aed">
-  <img alt="GPU" src="https://img.shields.io/badge/GPU-CUDA%20(dlopen)-76b900">
-  <img alt="API" src="https://img.shields.io/badge/API-OpenAI--compatible-412991">
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
-</p>
+**Run one LLM across several ordinary computers (Macs, Linux PCs, a GPU workstation) as if they were one machine.** Pure Rust with zero external crates, and an OpenAI-compatible HTTP API.
+
+[![CI](https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg)](https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/giuseppegambino92/tesseract-fabric)](https://github.com/giuseppegambino92/tesseract-fabric/releases/latest)
+[![License: Apache-2.0](https://img.shields.io/github/license/giuseppegambino92/tesseract-fabric)](LICENSE)
 
 [English](#english) | [Italiano](#italiano)
 
-<a href="https://paypal.me/giuseppegambino92"><img src="https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif" alt="Donate with PayPal"></a>
+**Headline result, on real hardware** ([details](docs/REAL_CLUSTER_BENCHMARK.md#second-physical-run-rtx-5090-2026-11-17)): an M3 Max laptop and an RTX 5090 workstation on a 5 GbE LAN serve **Llama-3.2-3B at 124–125 tok/s**, within 2–4 % of the GPU alone and **≈ 4.7× an Exo-style layer ring** (26–27 tok/s) on the same two machines. A 4-rank cluster reproduces a single node **bit for bit** on five real checkpoints.
+
+What it does not do: when a model fits on one machine, the cluster does not beat that machine alone; when the model has to be split, the slowest stage sets the speed. All results, including the misses, are in [**benchmarks/**](benchmarks/README.md).
+
+```bash
+git clone https://github.com/giuseppegambino92/tesseract-fabric && cd tesseract-fabric
+cargo build --release      # zero external crates: nothing else to download
+```
+Then see [Quick Start & Usage](#-quick-start--usage) to chat with a real checkpoint or start the server.
 
 ---
 
@@ -112,9 +113,10 @@ Add `--lan-broadcast` on a trusted LAN to find peers without seeds. Open the das
 
 #### 5. Benchmarks
 ```bash
-cargo run --release --bin tesseract-bench              # all scenarios → bench_results.md
+cargo run --release --bin tesseract-bench              # all scenarios → benchmarks/bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # shorter run
 ```
+Every recorded run, with a summary of what they show, is in [`benchmarks/`](benchmarks/README.md).
 Benchmark clusters emulate every node as threads on one host, with link shaping and compute slowdowns derived from device profiles. Results depend on the host's load and clock regime, as described in the v1.0.0 section. To measure the same engines on **real machines**, follow [`docs/REAL_CLUSTER_BENCHMARK.md`](docs/REAL_CLUSTER_BENCHMARK.md): interleaved rounds, measured links and a shareable report (`tesseract-node --role coordinator … --rounds 5 --report`).
 
 
@@ -184,6 +186,8 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 
 <a name="italiano"></a>
 ## 🇮🇹 Documentazione in Italiano
+
+**In breve: un unico LLM eseguito su più computer normali (Mac, PC Linux, una workstation con GPU) come se fossero una sola macchina.** Risultato principale, su hardware reale ([dettagli](docs/REAL_CLUSTER_BENCHMARK.md#second-physical-run-rtx-5090-2026-11-17), in inglese): un portatile M3 Max e una workstation con RTX 5090 in LAN a 5 GbE servono **Llama-3.2-3B a 124–125 tok/s**, entro il 2–4 % della sola GPU e **circa 4,7× un anello di layer stile Exo** (26–27 tok/s) sulle stesse due macchine. Cosa non fa: se un modello sta in una sola macchina, il cluster non batte quella macchina da sola; se il modello va diviso, lo stadio più lento determina la velocità. Tutti i risultati, compresi quelli mancati, sono in [**benchmarks/**](benchmarks/README.md).
 
 `tesseract-fabric` è un runtime di inferenza distribuita in puro Rust, **senza alcun crate esterno**. Esegue LLM transformer su cluster eterogenei (Mac Apple Silicon, workstation Linux, dispositivi ARM64) tramite socket TCP reali. Un cluster H-TEP a 4 rank riproduce **bit per bit** un singolo nodo su cinque checkpoint GGUF reali. Passa 126 test, con `cargo fmt --check` e `cargo clippy -D warnings` puliti.
 
@@ -275,9 +279,10 @@ Su una LAN fidata, aggiungere `--lan-broadcast` per trovare i peer senza seed. L
 
 #### 5. Benchmark
 ```bash
-cargo run --release --bin tesseract-bench              # tutti gli scenari → bench_results.md
+cargo run --release --bin tesseract-bench              # tutti gli scenari → benchmarks/bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # esecuzione breve
 ```
+Tutte le run registrate, con un riepilogo di cosa mostrano, sono in [`benchmarks/`](benchmarks/README.md) (in inglese).
 I cluster di benchmark emulano ogni nodo come thread su un unico host, con link modellati e rallentamenti di calcolo derivati dai profili dei dispositivi. I risultati dipendono dal carico e dal regime di clock dell'host, come descritto nella sezione v1.0.0. Per misurare gli stessi motori su **macchine reali** segui [`docs/REAL_CLUSTER_BENCHMARK.md`](docs/REAL_CLUSTER_BENCHMARK.md) (in inglese): round interlacciati, link misurati e un report condivisibile (`tesseract-node --role coordinator … --rounds 5 --report`).
 
 
@@ -347,7 +352,7 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 
 Se questo progetto ti è utile, puoi sostenerne lo sviluppo con una donazione su PayPal:
 
-<a href="https://paypal.me/giuseppegambino92"><img src="https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif" alt="Donate with PayPal"></a>
+<a href="https://paypal.me/giuseppegambino92"><img src="https://www.paypalobjects.com/it_IT/IT/i/btn/btn_donateCC_LG.gif" alt="Fai una donazione con PayPal"></a>
 
 ---
 
@@ -401,7 +406,7 @@ It still uses zero external crates.
 ```bash
 cargo build --release
 cargo test --release                                   # 126 tests (first run downloads ≈ 2.9 GB of GGUF checkpoints into models/)
-cargo run --release --bin tesseract-bench              # all scenarios → stdout + bench_results.md
+cargo run --release --bin tesseract-bench              # all scenarios → stdout + benchmarks/bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # shorter run (48 tokens, 2 rounds, 2K/8K contexts)
 cargo run --release --bin tesseract-bench -- --scenarios 3 --contexts 2048,65536   # select scenarios / contexts
 cargo run --release --bin tesseract-bench -- --scenarios v8   # V8.0 Section 4 only (GGUF formats, load, kernels)
@@ -551,7 +556,7 @@ Frame types: `ActivationDelta`, `SpeculativeTreeBatch`, `PreWakeSignal`, `KvQuer
 
 ### Final scorecards: two back-to-back runs
 
-Run 1 is in `bench_results_v1_0_0_run1.md` and run 2 in `bench_results.md`; V10.1's runs are archived as `bench_results_v10_1_run1.md` and `bench_results_v10_1.md`. The host was in use throughout and the quiet-host gate timed out before every section. Starting loads:
+Run 1 is in [`bench_results_v1_0_0_run1.md`](benchmarks/bench_results_v1_0_0_run1.md) and run 2 in [`bench_results.md`](benchmarks/bench_results.md); V10.1's runs are archived as [`bench_results_v10_1_run1.md`](benchmarks/bench_results_v10_1_run1.md) and [`bench_results_v10_1.md`](benchmarks/bench_results_v10_1.md). The host was in use throughout and the quiet-host gate timed out before every section. Starting loads:
 
 * run 1: S1 6.1, S2 9.1, S3 6.6, Section 6 13.5;
 * run 2: S1 16.5, S2 7.8, S3 12.1, Section 6 55.8.
@@ -616,7 +621,7 @@ But speculation does not *win* Scenario 2 at full host speed, and the reason is 
 
 ### Two back-to-back runs
 
-Run 1 is in `bench_results_v10_1_run1.md` and run 2 in `bench_results.md`; V10.0's runs are archived as `bench_results_v10_0_run1.md` and `bench_results_v10_0.md`. The host was in use during both runs: `fileproviderd` at ≈ 95–99% of a core throughout, then interactive work. The quiet-host gate timed out before every scenario. Section headers record the starting loads:
+Run 1 is in [`bench_results_v10_1_run1.md`](benchmarks/bench_results_v10_1_run1.md) and run 2 in [`bench_results.md`](benchmarks/bench_results.md); V10.0's runs are archived as [`bench_results_v10_0_run1.md`](benchmarks/bench_results_v10_0_run1.md) and [`bench_results_v10_0.md`](benchmarks/bench_results_v10_0.md). The host was in use during both runs: `fileproviderd` at ≈ 95–99% of a core throughout, then interactive work. The quiet-host gate timed out before every scenario. Section headers record the starting loads:
 
 * run 1: S1 5.0, S2 12.0, S3 8.4;
 * run 2: S1 14.0, S2 100.4, S3 7.8.
@@ -695,7 +700,7 @@ Emulated slow devices extend their *measured* compute time by their slowdown fac
 
 ### Benchmark: two full runs, and Section 6
 
-Two complete `tesseract-bench` runs, back to back. Run 1 is in `bench_results_v10_0_run1.md`; run 2 is in `bench_results_v10_0.md` (V9.0's is archived as `bench_results_v9.md`). The host carried persistent background load from two macOS system services (`fileproviderd` ≈ 95% and `duetexpertd` ≈ 86% of a core). The new gate therefore timed out (3 min) before most sections, and each section header records the load it actually ran at: run 1 started Scenario 1 at 60.5 and Scenario 2 at 8.9; run 2 at 4.6 and 5.8. The deterministic rows (codec frontier, drafter agreement, determinism, LSE traffic, holographic compression) are byte-identical to V9.0 in both runs: the synthetic models are FP32, so the new kernels and exact modes do not touch them.
+Two complete `tesseract-bench` runs, back to back. Run 1 is in [`bench_results_v10_0_run1.md`](benchmarks/bench_results_v10_0_run1.md); run 2 is in [`bench_results_v10_0.md`](benchmarks/bench_results_v10_0.md) (V9.0's is archived as [`bench_results_v9.md`](benchmarks/bench_results_v9.md)). The host carried persistent background load from two macOS system services (`fileproviderd` ≈ 95% and `duetexpertd` ≈ 86% of a core). The new gate therefore timed out (3 min) before most sections, and each section header records the load it actually ran at: run 1 started Scenario 1 at 60.5 and Scenario 2 at 8.9; run 2 at 4.6 and 5.8. The deterministic rows (codec frontier, drafter agreement, determinism, LSE traffic, holographic compression) are byte-identical to V9.0 in both runs: the synthetic models are FP32, so the new kernels and exact modes do not touch them.
 
 | # | Target | Run 1 | Run 2 |
 |---|---|---|---|
@@ -839,7 +844,7 @@ Every kernel quantizes its activations to Q8 blocks (as llama.cpp does). That ro
 
 ### Benchmark: two full runs, and Section 5 (real checkpoints)
 
-Two complete `tesseract-bench` runs, back to back. Run 1 (start load ≈ 9) is in `bench_results_v9_run1.md`; run 2 (start load ≈ 4) is in `bench_results.md`. The deterministic rows (codec frontier, drafter agreement, LSE error, compression) are byte-identical to V8.0 in both runs.
+Two complete `tesseract-bench` runs, back to back. Run 1 (start load ≈ 9) is in [`bench_results_v9_run1.md`](benchmarks/bench_results_v9_run1.md); run 2 (start load ≈ 4) is in [`bench_results.md`](benchmarks/bench_results.md). The deterministic rows (codec frontier, drafter agreement, LSE error, compression) are byte-identical to V8.0 in both runs.
 
 | # | Target | Run 1 | Run 2 |
 |---|---|---|---|
@@ -1037,7 +1042,7 @@ H-TEP and the TP baseline split each expert's hidden units as `d / world` per ra
 
 ### Section 4 benchmark and the V7.0 scorecard
 
-One full `tesseract-bench` run (`bench_results.md`; start load ≈ 21, 1,235 s). Section 4 exports the 153M-parameter benchmark model to GGUF in four formats and serves it from the file:
+One full `tesseract-bench` run ([`bench_results.md`](benchmarks/bench_results.md); start load ≈ 21, 1,235 s). Section 4 exports the 153M-parameter benchmark model to GGUF in four formats and serves it from the file:
 
 ##### Footprint, load and fidelity
 
@@ -1133,7 +1138,7 @@ Row 9's envelope margin (1.39×) is the widest yet; V7.0's two runs gave 1.03× 
 
 **Two full runs, back to back** (run 1: 1-min load 22.8 at start, but 77 / 126 over 5 / 15 min; run 2: 10.8):
 
-| # | Target | Run 1 (`bench_results_v7_0_run1.md`) | Run 2 (`bench_results.md`) |
+| # | Target | Run 1 ([`bench_results_v7_0_run1.md`](benchmarks/bench_results_v7_0_run1.md)) | Run 2 ([`bench_results.md`](benchmarks/bench_results.md)) |
 |---|---|---|---|
 | 1–5, 7, 12 | codec, drafter, greedy, error | Yes | Yes |
 | 6 | 4-token verification, original ≤ 1.35× | envelope 1.60×: **No** | envelope 1.62×: **No** |
@@ -1368,7 +1373,7 @@ Striping by KV-head group spends **more** bytes than the single-partner layout, 
 
 The cluster ratio (1.38–1.43× in V6.1, paired rounds 1.03–1.84) sits within run-to-run noise of 1.35×.
 
-**Benchmark status at V6.2.** The full benchmark was not re-run for V6.2: host load was 115–183 when the code was finished, from other jobs on the machine. `bench_results.md` still holds the V6.1 output, also archived as `bench_results_v6_1.md`, and the last usable throughput run is `bench_results_v6.md`. Rows 6, 10, 11, 14 and 15 depend on throughput and need an idle-host run of `cargo run --release --bin tesseract-bench`.
+**Benchmark status at V6.2.** The full benchmark was not re-run for V6.2: host load was 115–183 when the code was finished, from other jobs on the machine. [`bench_results.md`](benchmarks/bench_results.md) still holds the V6.1 output, also archived as [`bench_results_v6_1.md`](benchmarks/bench_results_v6_1.md), and the last usable throughput run is [`bench_results_v6.md`](benchmarks/bench_results_v6.md). Rows 6, 10, 11, 14 and 15 depend on throughput and need an idle-host run of `cargo run --release --bin tesseract-bench`.
 
 ## V6.1: what changed and what it measured
 
@@ -1401,7 +1406,7 @@ For the record, under that load:
 | 14 · S3 2K ≥ 1.02× ring | paired 1.24× (KV fabric) / 1.26× (full engine) | Yes |
 | 15 · 8K–64K at 1.4–2.8× | KV fabric 0.90× / 1.84× / 1.54×; full engine 1.22× / 1.24× / 1.32× | No |
 
-The quieter V6 run (load ≈ 30–56) met 12 of 15 rows, and its results are kept in `bench_results_v6.md`. Rows 10–11 and 13–15 can only be settled by re-running `cargo run --release --bin tesseract-bench` on an idle host. Row 6 sits at 1.38–1.43× in the cluster and ≈ 2.0–2.2× on a single node, where it is bounded by the 2.7× expert-weight traffic of exact routing.
+The quieter V6 run (load ≈ 30–56) met 12 of 15 rows, and its results are kept in [`bench_results_v6.md`](benchmarks/bench_results_v6.md). Rows 10–11 and 13–15 can only be settled by re-running `cargo run --release --bin tesseract-bench` on an idle host. Row 6 sits at 1.38–1.43× in the cluster and ≈ 2.0–2.2× on a single node, where it is bounded by the 2.7× expert-weight traffic of exact routing.
 
 ## V6: what changed and what it measured
 
@@ -1646,7 +1651,7 @@ The controller chose 8–16-node trees in most epochs. Under the wall-time noise
 
 ## Benchmark results (verbatim V9.0 `tesseract-bench` output, run 2)
 
-The tables below are exactly what the second V9.0 run of `cargo run --release --bin tesseract-bench` wrote to `bench_results.md` (load ≈ 4 at start), including Section 4 (V8.0 production runtime) and Section 5 (V9.0 real checkpoints). Run 1 is in `bench_results_v9_run1.md`; V8.0 is in `bench_results_v8.md`, and earlier versions are in `bench_results_v1.md` to `bench_results_v7_0.md`.
+The tables below are exactly what the second V9.0 run of `cargo run --release --bin tesseract-bench` wrote to [`bench_results.md`](benchmarks/bench_results.md) (load ≈ 4 at start), including Section 4 (V8.0 production runtime) and Section 5 (V9.0 real checkpoints). Run 1 is in [`bench_results_v9_run1.md`](benchmarks/bench_results_v9_run1.md); V8.0 is in [`bench_results_v8.md`](benchmarks/bench_results_v8.md), and earlier versions are in [`bench_results_v1.md`](benchmarks/bench_results_v1.md) to [`bench_results_v7_0.md`](benchmarks/bench_results_v7_0.md).
 
 Host: Apple M3 Max · 14 logical CPUs · every node is a set of OS threads with its own TCP endpoints on 127.0.0.1; all traffic is real `TesseractWire` frames through the kernel's TCP stack, delayed by per-link shapers (FIFO serialisation at link bandwidth + one-way latency + jitter). Compute is real FP32 tensor math on this host; slower devices are emulated by extending each node's *measured* compute time by its memory-bandwidth ratio to the fastest node.
 
@@ -1995,6 +2000,7 @@ tests/math_verification.rs FWHT, HRQ-EF, LSE merge (4K–16K, 4/8 shards), tree 
 tests/cluster_e2e.rs       live socket clusters: all engines, braid commits, determinism, disaggregated KV, edge drafter, brownout, solver
 tests/production_v8.rs     GGUF / SafeTensors mmap round trips, 4-node H-TEP from Q8_0 / Q4_0 files, quantized kernels, BPE, UDP discovery, HTTP / SSE
 tests/production_v9.rs     real SmolLM2 / Qwen2.5 / Qwen3 / Llama 3.2 checkpoints, K-quants, templates, exactness, prefix cache, hot-join, concurrency
+benchmarks/                every recorded tesseract-bench run (bench_results*.md) and a summary (README.md)
 examples/                  avx2_check, accel_crossover, accel_moe (Accelerate thresholds), kquant_bench, gguf_inspect, cluster_probe (real model: single node vs clusters), crypto_bench, cuda_bench (GPU vs CPU per weight shape)
 ```
 
