@@ -13,23 +13,39 @@ pub use solver::{
 use crate::model::ModelConfig;
 
 /// Solver footprint of a model at `holo_bits` activation compression.
+///
+/// Synthetic models are f32. Real checkpoints are budgeted at the bytes
+/// their tensors actually take in the file (a Q4_K_M model is ≈ 5.7× smaller
+/// than its f32 equivalent), so planning against a node's free memory sees
+/// what the node will really map.
 pub fn footprint(cfg: &ModelConfig, holo_bits: u8) -> ModelFootprint {
+    let (scale, head_bytes) = if cfg.source.is_file() {
+        use crate::loader::sharded_loader::shard_bytes;
+        let f32_bytes = (cfg.n_layers * cfg.layer_params() * 4) as f64;
+        let stored = shard_bytes(cfg, 0..cfg.n_layers, None, false) as f64;
+        (
+            stored / f32_bytes.max(1.0),
+            shard_bytes(cfg, 0..0, None, true) as f64,
+        )
+    } else {
+        (1.0, (2 * cfg.vocab * cfg.d_model * 4) as f64)
+    };
     ModelFootprint {
         n_layers: cfg.n_layers,
-        layer_bytes: (cfg.layer_params() * 4) as f64,
-        layer_active_bytes: (cfg.layer_active_params() * 4) as f64,
+        layer_bytes: (cfg.layer_params() * 4) as f64 * scale,
+        layer_active_bytes: (cfg.layer_active_params() * 4) as f64 * scale,
         layer_flops_per_row: 2.0 * cfg.layer_active_params() as f64,
-        head_bytes: (2 * cfg.vocab * cfg.d_model * 4) as f64,
+        head_bytes,
         act_bytes_per_row: cfg.d_model as f64 * holo_bits as f64 / 8.0
             + cfg.d_model as f64 / 32.0
             + 16.0,
         kv_bytes_per_token_layer: cfg.kv_bytes_per_token_layer() as f64,
         moe: cfg.moe.is_some(),
-        attn_bytes: (cfg.d_model * (2 * cfg.q_dim() + 2 * cfg.kv_dim()) * 4) as f64,
+        attn_bytes: (cfg.d_model * (2 * cfg.q_dim() + 2 * cfg.kv_dim()) * 4) as f64 * scale,
         expert_bytes: cfg
             .moe
             .as_ref()
-            .map(|m| (m.n_experts * 3 * cfg.d_model * m.d_expert * 4) as f64)
+            .map(|m| (m.n_experts * 3 * cfg.d_model * m.d_expert * 4) as f64 * scale)
             .unwrap_or(0.0),
     }
 }

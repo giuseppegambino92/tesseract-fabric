@@ -398,6 +398,29 @@ impl LocalProfile {
     /// Measure this host: single-core GEMM throughput, single-stream copy
     /// bandwidth and available RAM (≈ 50 ms).
     pub fn detect() -> Self {
+        // a node running its layers on an NVIDIA GPU advertises the GPU:
+        // measured VRAM bandwidth and SGEMM throughput, free VRAM as the
+        // memory its weights must fit in
+        if crate::tensor::accel::cuda_active() {
+            if let Some(g) = crate::tensor::cuda::measure() {
+                let cpu = Self::detect_cpu();
+                return LocalProfile {
+                    platform: Platform::DiscreteGpuWorkstation,
+                    compute_tflops_fp16: if g.tflops_fp32 > 0.0 {
+                        g.tflops_fp32 as f32
+                    } else {
+                        cpu.compute_tflops_fp16
+                    },
+                    mem_bandwidth_gbps: g.mem_bandwidth_gbps as f32,
+                    free_ram_mb: cpu.free_ram_mb.min(g.free_vram_mb as u32),
+                };
+            }
+        }
+        Self::detect_cpu()
+    }
+
+    /// The CPU / unified-memory measurement.
+    fn detect_cpu() -> Self {
         let platform = if cfg!(target_os = "android") {
             Platform::MobileEdgeNpu
         } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {

@@ -427,7 +427,19 @@ pub struct RooflineController {
     pub charge_successor: bool,
     /// Tree epoch whose cost waits for its successor: (size index, wall ns).
     deferred: Option<(usize, f64)>,
+    /// Epoch of the next periodic probe / neighbour refresh, and the current
+    /// interval: it starts at [`PROBE_EVERY`] and doubles (up to
+    /// [`PROBE_EVERY_MAX`]) each time a probe tree is not accepted at all, so
+    /// a drafter that never helps (a target far faster than its drafter)
+    /// stops costing a tree epoch every 24.
+    next_probe: u64,
+    probe_every: u64,
 }
+
+/// Initial interval of the periodic re-probe, in epochs.
+pub const PROBE_EVERY: u64 = 24;
+/// Longest interval after repeated unaccepted probes.
+pub const PROBE_EVERY_MAX: u64 = 384;
 
 impl RooflineController {
     pub fn new(candidates: Vec<usize>) -> Self {
@@ -448,6 +460,8 @@ impl RooflineController {
             req_epochs: 0,
             charge_successor: false,
             deferred: None,
+            next_probe: PROBE_EVERY - 1,
+            probe_every: PROBE_EVERY,
         }
     }
 
@@ -596,7 +610,7 @@ impl RooflineController {
             // and is re-probed periodically while the controller sits at N = 1
             let probe = self.candidates.iter().copied().filter(|&c| c > 1).min();
             if let Some(p) = probe {
-                if self.last_q.is_empty() || (self.epochs % 24 == 23 && self.epochs > 0) {
+                if self.last_q.is_empty() || (self.probe_due() && self.epochs > 0) {
                     return p;
                 }
             }
@@ -662,7 +676,7 @@ impl RooflineController {
         }
         // (tree costs are relative to the always-fresh 1-row cost, so they
         // stay valid across clock regimes and need only rare refreshing)
-        if self.epochs % 24 == 23 {
+        if self.probe_due() {
             let nb = [bi.checked_sub(1), (bi + 1 < n_c).then_some(bi + 1)];
             if let Some(i) = nb
                 .into_iter()
@@ -684,6 +698,10 @@ impl RooflineController {
 
     /// Record a verified epoch: tree size used, the drafted tree's best-first
     /// path probabilities, tokens emitted, wall and compute time.
+    fn probe_due(&self) -> bool {
+        self.epochs >= self.next_probe
+    }
+
     pub fn record(
         &mut self,
         n: usize,
@@ -692,6 +710,15 @@ impl RooflineController {
         wall_ns: u64,
         compute_ns: u64,
     ) {
+        if self.probe_due() && n > 1 {
+            // a probe tree that emitted only the bonus token: back off
+            self.probe_every = if emitted <= 1 {
+                (self.probe_every * 2).min(PROBE_EVERY_MAX)
+            } else {
+                PROBE_EVERY
+            };
+            self.next_probe = self.epochs + self.probe_every;
+        }
         let a = self.ema;
         // a single-node epoch carries no acceptance information
         if path_q.len() > 1 {

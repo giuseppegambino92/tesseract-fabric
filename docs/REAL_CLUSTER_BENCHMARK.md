@@ -29,6 +29,8 @@ tesseract-node --role worker --id <i> --listen 0.0.0.0:7000 --cluster-secret "$T
     [--gguf /path/to/model.gguf]
 ```
 
+On a Linux machine with an NVIDIA GPU, start the worker with `TESSERACT_BACKEND=cuda` to run its layers on the GPU (see [GPU nodes](#gpu-nodes)). The worker's first log line names its kernels, e.g. `kernels cuda (NVIDIA GeForce RTX 5090 · sm_120 · 31.4 GiB)`.
+
 Encryption (X25519 key exchange with forward secrecy, then ChaCha20-Poly1305) costs about 1.4 GB/s (11 Gb/s) of one core; large records are split across up to 4 cores, reaching ≈ 3.7 GB/s (≈ 30 Gb/s) on an M3 Max. The report states the coordinator's own sealing throughput next to the measured links, so you can see whether encryption could limit them. To measure without it on a trusted dedicated link, add `--wire-plaintext` on **every** node and say so when you publish.
 
 ## 3. Run the coordinator
@@ -46,6 +48,7 @@ tesseract-node --role coordinator --listen <coordinator-ip>:6999 --cluster-secre
 - `--model`:
   - `tiny`, `bench` or `long` for the synthetic models;
   - a GGUF / SafeTensors path for a real checkpoint, which the workers load with `--gguf`.
+- `--ram-mb A,B,..` (optional): the memory each node may use for the model, in MB of stored weights. Use it to test a split that the machines' real memory would not force.
 - `--rounds 5`: every engine runs once per round, interleaved, so drifting load or network conditions hit all engines alike. The report gives the median and the min–max.
 - No `--emulate-links`: the real network is the link model and device speeds are not stretched.
 
@@ -98,7 +101,7 @@ Two real machines on the same LAN, run with this procedure (commit after 1.2.0, 
 | A (coordinator + worker 0) | MacBook Pro, Apple M3 Max, 36 GB, macOS | 10 GbE |
 | B (worker 1) | AMD Ryzen 9 9950X3D (16 cores), 91 GB DDR5, Ubuntu 25.04 | 5 GbE (the link runs at 5 Gb/s) |
 
-Machine B also has an RTX 5090, which these runs do not use: the engines run on the CPU.
+Machine B also has an RTX 5090, which these runs do not use: the engines run on the CPU. The [second run](#second-physical-run-rtx-5090-2026-11-17) uses it.
 
 **Single-node reference** (same build, `--role chat --local-nodes 1`):
 
@@ -128,3 +131,90 @@ What this shows:
   - Llama-3.2-1B: 34–35 tok/s against 40 on A alone, **about 13 % slower**. B's drafts were not accepted (1.00 tokens per step), so the remote drafter only added round trips.
   - Splitting a model across machines pays off when it does not fit in one; these runs do not test that case.
 - The coordinator's link probe (3 pings, one 64 KB burst) under-reads a 5 GbE link: 0.3–1.2 Gb/s reported. Treat its numbers as a sanity check, not a bandwidth measurement.
+
+## Second physical run: RTX 5090 (2026-11-17)
+
+The same two machines and network as the first run, with version 1.4.0 and machine B's RTX 5090 in use (`TESSERACT_BACKEND=cuda` on B's worker; A runs the portable CPU kernels). All runs are encrypted, with 5 interleaved rounds, 64 tokens, temperature 0 and two passes, shown as pass 1 / pass 2. The coordinator's 1-minute load stayed between 3.8 and 6.2 in every round.
+
+Since 1.4.0 the benchmark runs real checkpoints with the same settings as `chat` and `tesseract-serve`: lossless activations between stages and prompt-lookup drafting. Numbers are therefore not comparable one-to-one with the first run.
+
+### GPU nodes
+
+With `TESSERACT_BACKEND=cuda`, a Linux worker opens the NVIDIA driver, NVRTC and cuBLAS with `dlopen`; no build step or crate is involved.
+- It compiles its kernels for the GPU at start-up and uploads the weight matrices of its own layers to VRAM, where they stay.
+- Each matrix product then runs on the GPU. Only the activations travel over PCIe.
+- Exact layers (attention output, FFN down) use a fixed-point kernel that matches the CPU bit for bit, so mixed CPU / GPU clusters keep the exactness guarantee.
+- Attention, norms and sampling stay on the CPU.
+
+### Single node
+
+Measured with the same coordinator, prompt and drafting as the cluster runs, with a single peer (`--peers <one worker> --engine tesseract`). tok/s:
+
+| Model | A: M3 Max, CPU | B: Ryzen 9 9950X3D, CPU | B: RTX 5090, CUDA | 5090 vs Ryzen | 5090 vs M3 Max |
+|---|---:|---:|---:|---:|---:|
+| SmolLM2-135M Q4_K_M | 338.8 / 340.7 | 124.6 / 118.3 | 385.3 / 434.7 | 3.1–3.7× | 1.1–1.3× |
+| Llama-3.2-1B Q4_K_M | 40.2 / 39.8 | 18.9 / 19.0 | 253.6 / 252.7 | 13.4× | 6.3× |
+| Llama-3.2-3B Q4_K_M | 16.2 / 16.3 | 7.7 / 7.6 | 127.3 / 128.2 | 16.7× | 7.9× |
+
+SmolLM2's matrices are small: per-product launch and copy latency (≈ 10 µs) and the CPU-side attention dominate, so the GPU gains less. `cargo run --release --example cuda_bench` breaks the latency down per weight shape.
+
+### Two machines, RTX 5090 as primary
+
+`--profile macbook-pro,rtx5090` declares B as the faster machine. The solver keeps every layer on B, B verifies, and A drafts. tok/s:
+
+| Model | Tesseract-Fabric | Exo-Ring-Pipeline | RDMA-Tensor-Parallel | Tesseract vs B alone |
+|---|---:|---:|---:|---:|
+| SmolLM2-135M | 420.6 / 440.8 (1.94 tokens / step) | 187.0 / 180.0 | n/a (9 heads) | ≈ equal |
+| Llama-3.2-1B | 244.2 / 244.7 | 67.0 / 66.3 | 21.6 / 21.9 | −3.4 % |
+| Llama-3.2-3B | 124.2 / 125.4 | 26.4 / 26.6 | 7.3 / 8.3 | −2.2 % |
+
+Network per token:
+- Tesseract-Fabric: 0.11–0.14 KB;
+- Exo: 1.6 / 5.2 / 7.7 KB;
+- tensor parallelism: 321 KB (1B) and 838 KB (3B).
+
+### Roles inverted: A declared primary
+
+`--profile studio-m5max,macbook-pro` declares A as a Mac Studio M5 Max and B as a laptop, the presets of the first run. The solver keeps every layer on A, and B's GPU only drafts. tok/s:
+
+| Model | Tesseract-Fabric | Exo-Ring-Pipeline | RDMA-Tensor-Parallel | A alone |
+|---|---:|---:|---:|---:|
+| SmolLM2-135M | 316.7 / 312.6 (2.1–3.1 tokens / step) | 187.5 / 181.2 | n/a | 338.8 / 340.7 |
+| Llama-3.2-1B | 40.7 / 39.8 | 57.8 / 58.5 | 22.5 / 22.2 | 40.2 / 39.8 |
+| Llama-3.2-3B | 15.9 / 16.3 | 22.4 / 23.3 | 8.9 / 8.3 | 16.2 / 16.3 |
+
+### The model split across both machines (Llama-3.2-3B)
+
+`--ram-mb` caps the memory each machine may use for the model, so that neither holds all 28 layers and the solver must split them **14 + 14**. Two placements were tested:
+- `--ram-mb 1800,1000`: the LM head (128k-token vocabulary) on A;
+- `--ram-mb 1000,1760`: the LM head on B.
+
+Exo splits layers in proportion to the same caps instead (18 + 10 and 10 + 18). tok/s:
+
+| B runs on | LM head on | Tesseract-Fabric | Exo-Ring-Pipeline | RDMA-Tensor-Parallel |
+|---|---|---:|---:|---:|
+| RTX 5090 (CUDA) | A | 22.9 / 22.9 | 25.2 / 25.4 (A 18 layers) | 7.3 / 8.2 |
+| RTX 5090 (CUDA) | B | 22.4 / 22.5 | 32.1 / 30.2 (A 10 layers) | 8.5 / 8.0 |
+| Ryzen CPU | A | 10.5 / 10.2 | 10.0 / 9.6 | 6.4 / 6.0 |
+| Ryzen CPU | B | 8.9 / 9.3 | 8.5 / 8.7 | 6.2 / 6.1 |
+
+For reference, A alone runs this model at 16.2 tok/s and B's GPU alone at 127.3, when each has the memory to hold it.
+
+Network per token on the split:
+- Tesseract-Fabric: 15.3 KB (lossless f32 activations);
+- Exo: 7.7 KB (f16);
+- tensor parallelism: 838 KB.
+
+### What this shows
+
+- **The CUDA backend makes B the fast machine**: 13–17× its own CPU on Llama, and 6–8× A's CPU engine.
+- **With B declared as primary, Tesseract-Fabric gives the RTX 5090's speed to the cluster.** It stays within 2–4 % of B alone (the network hop to the coordinator and the drafter's messages), and is 2.3–4.7× Exo and 11–17× tensor parallelism. Those two engines put layers on A's CPU, so every token waits for it.
+- **The solver trusts the declared profiles.** When A is declared the faster machine, Tesseract-Fabric keeps everything on A and runs exactly as fast as A alone (no longer 13 % slower as in the first run). Exo splits by declared memory, which happens to put 4–8 layers on the GPU, and wins on Llama (58 against 40 tok/s on 1B). Declare the right presets. Since 1.4.0, workers running `--discover` with `TESSERACT_BACKEND=cuda` advertise their measured GPU bandwidth, SGEMM throughput and free VRAM instead of their CPU's.
+- **When the model must be split, both accelerators work and the CPU stage bounds the speed.**
+  - With the GPU, the split runs 2.2–2.5× faster than with B's CPU, and 1.4× A alone.
+  - A's 14 layers take most of each token's ≈ 44 ms, so moving the LM head between machines changes little for Tesseract-Fabric.
+  - Exo's proportional rule put only 10 layers on A when the head sat on B, and was faster there (30–32 tok/s). Tesseract-Fabric's solver reserves 15 % of each cap for the KV cache and budgets the tied embedding / LM head table twice (lookup and readout), so the same caps leave it 14 layers on A.
+- **Drafting costs ≈ 11 % on the split.** The drafter sits on A, the bottleneck stage, and this prompt accepts no drafts (1.00 tokens per step). Run without the other engines interleaved, Tesseract-Fabric reaches 25.8–29.4 tok/s with drafting and 30.3–30.4 with `--budget 1` (speculation off), with the LM head on B. In both runs the fifth round dropped to 10.9 tok/s; the cause was not identified (the GPU was shared at the time, see below).
+  - Interleaved with Exo and tensor parallelism, as in the table, the same configuration measured 22.4–22.5. That gap is not explained yet.
+- **Encryption costs nothing measurable here either.** Alternating plaintext and encrypted runs (Llama-3.2-1B, B primary, Tesseract-Fabric only) gave medians of 244.1 and 244.2 tok/s in plaintext against 243.5 and 243.8 encrypted. The coordinator (on A) seals ≈ 4 GB/s, while the heaviest traffic in these runs is 7.5 MB/s (tensor parallelism on the 3B model).
+- **The GPU was shared.** Other software used the RTX 5090 at times during the session (image generation, a local LLM server). Runs made while it was busy showed rounds alternating between ≈ 19 and ≈ 243 tok/s, and were repeated once the GPU had been idle for 30 s.

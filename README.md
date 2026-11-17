@@ -1,13 +1,14 @@
 # Tesseract-Fabric 🚀
-### Pure-Rust Distributed AI Inference Engine (v1.3.0)
+### Pure-Rust Distributed AI Inference Engine (v1.4.0)
 
 <p>
   <a href="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-orange?logo=rust">
   <img alt="External crates" src="https://img.shields.io/badge/external%20crates-0-success">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-122%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-126%20passing-brightgreen">
   <img alt="Platforms" src="https://img.shields.io/badge/macOS%20%7C%20Linux-supported-555">
   <img alt="SIMD" src="https://img.shields.io/badge/SIMD-NEON%20%7C%20AVX2-7c3aed">
+  <img alt="GPU" src="https://img.shields.io/badge/GPU-CUDA%20(dlopen)-76b900">
   <img alt="API" src="https://img.shields.io/badge/API-OpenAI--compatible-412991">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
 </p>
@@ -21,7 +22,7 @@
 <a name="english"></a>
 ## 🇬🇧 English Documentation
 
-`tesseract-fabric` is a pure-Rust distributed inference runtime with **zero external crates**. It runs transformer LLMs across heterogeneous clusters (Apple Silicon Macs, Linux workstations, ARM64 devices) over real TCP sockets. A 4-rank H-TEP cluster reproduces a single node **bit for bit** on five real GGUF checkpoints. It passes 122 tests with `cargo fmt --check` and `cargo clippy -D warnings` clean.
+`tesseract-fabric` is a pure-Rust distributed inference runtime with **zero external crates**. It runs transformer LLMs across heterogeneous clusters (Apple Silicon Macs, Linux workstations, ARM64 devices) over real TCP sockets. A 4-rank H-TEP cluster reproduces a single node **bit for bit** on five real GGUF checkpoints. It passes 126 tests with `cargo fmt --check` and `cargo clippy -D warnings` clean.
 
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-light.svg#gh-light-mode-only)
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-dark.svg#gh-dark-mode-only)
@@ -36,7 +37,8 @@
 4. **Zero-copy `mmap` and SIMD quantized kernels**:
    * GGUF (v2 / v3) and SafeTensors loaders;
    * F16 / BF16 / Q8_0 / Q6_K / Q5_0 / Q4_K / Q4_0 weights, with NEON (`sdot`) and AVX2 integer kernels;
-   * on an M3 Max: 25–30 GMAC/s per thread at one row, up to ≈ 58 GMAC/s at four rows.
+   * on an M3 Max: 25–30 GMAC/s per thread at one row, up to ≈ 58 GMAC/s at four rows;
+   * **NVIDIA GPUs** (`TESSERACT_BACKEND=cuda`, Linux): the driver, NVRTC and cuBLAS are opened with `dlopen` at run time, so there is still no crate and no build step. Each node keeps its layers in VRAM; exact layers match the CPU bit for bit. On an RTX 5090, Llama-3.2-3B decodes at 128 tok/s against 7.6 on the host's Ryzen 9 9950X3D.
 5. **OpenAI-compatible server and web dashboard**: `tesseract-serve` streams SSE and supports continuous batching of concurrent chats (`--sessions N`) and companion draft models (`--draft-model`).
 
 ---
@@ -78,7 +80,7 @@ Real runs, recorded by `scripts/make_screenshots.py` (nothing is staged; the com
 #### 1. Compile and test
 ```bash
 cargo build --release
-cargo test --release      # 122 tests; the first run downloads ≈ 2.9 GB of public GGUF checkpoints into models/
+cargo test --release      # 126 tests; the first run downloads ≈ 2.9 GB of public GGUF checkpoints into models/
 ```
 
 #### 2. Chat with a real checkpoint on an in-process 4-node cluster
@@ -106,7 +108,7 @@ tesseract-node --role worker --id 3 --listen 0.0.0.0:7000 --discover --cluster-s
 # coordinator: wait for 4 workers, probe, solve, assign, serve
 tesseract-serve --discover 4 --cluster-secret s3cret --model model.gguf --http 0.0.0.0:8080 --api-key "$TESSERACT_API_KEY"
 ```
-Add `--lan-broadcast` on a trusted LAN to find peers without seeds. Open the dashboard as `http://host:8080/#key=<KEY>`.
+Add `--lan-broadcast` on a trusted LAN to find peers without seeds. Open the dashboard as `http://host:8080/#key=<KEY>`. On a Linux worker with an NVIDIA GPU, prefix the worker command with `TESSERACT_BACKEND=cuda`.
 
 #### 5. Benchmarks
 ```bash
@@ -155,12 +157,23 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 - **Resource reporting**: nodes advertise memory *available now* (Linux `MemAvailable`; macOS computed like Activity Monitor), not installed RAM.
 
 ### 📊 Status
-- **122/122 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 in v1.2.0: encryption, fault injection, FIFO; 6 in v1.3.0: X25519, forward secrecy, parallel records, the OpenSSL-verified corpus), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
+- **126/126 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 in v1.2.0: encryption, fault injection, FIFO; 6 in v1.3.0: X25519, forward secrecy, parallel records, the OpenSSL-verified corpus; 4 in v1.4.0: the CUDA kernels against the CPU, the speculation controller's back-off, the planner's footprint of a real checkpoint), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
 - **Exact distributed inference**: 4-rank H-TEP matches a single node on 40/40 tokens and 40/40 logit rows for SmolLM2, Qwen2.5, Qwen3 and Llama 3.2 (dense models; MoE expert routing is not covered by the exactness guarantee).
 - **First physical run** (two machines on a 5 GbE LAN: an M3 Max laptop and a Ryzen 9 9950X3D, CPU only; [results](docs/REAL_CLUSTER_BENCHMARK.md#first-physical-run-2026-11-17)):
   - Tesseract-Fabric keeps the layers on the faster machine and runs 1.4–1.7× the Exo-style ring and 2.4× tensor parallelism.
   - With models that fit on one machine it matches (SmolLM2-135M) or trails by ≈ 13 % (Llama-3.2-1B) that machine alone.
   - Encryption costs nothing measurable.
+- **Second physical run, with the workstation's RTX 5090** (`TESSERACT_BACKEND=cuda`; [results](docs/REAL_CLUSTER_BENCHMARK.md#second-physical-run-rtx-5090-2026-11-17)). Decode tok/s, two passes, encrypted:
+
+  | Model | M3 Max (CPU) | Ryzen 9 9950X3D (CPU) | RTX 5090 (CUDA) | M3 Max + RTX 5090, Tesseract-Fabric | same cluster, Exo ring / tensor parallel |
+  |---|---:|---:|---:|---:|---:|
+  | SmolLM2-135M | 339–341 | 118–125 | 385–435 | 421–441 | 180–187 / n/a |
+  | Llama-3.2-1B | 40 | 19 | 253 | 244 | 66–67 / 22 |
+  | Llama-3.2-3B | 16 | 7.6 | 127–128 | 124–125 | 26–27 / 7–8 |
+  | Llama-3.2-3B, split 14 + 14 layers | — | — | — | 22–23 | 25–32 / 7–9 |
+
+  - With the RTX 5090 declared primary, the cluster runs within 2–4 % of the GPU alone.
+  - When the model has to be split, the M3 Max's CPU stage bounds the speed. The split is still 2.2–2.5× faster than with the workstation's CPU instead of its GPU, and 1.4× the M3 Max alone.
 - **Benchmark scorecard**: 14/15 and 13/15 in the two final back-to-back runs.
   - Scenario 2 row 9 (speculation beating its own ablation on a heterogeneous cluster) reaches parity, 0.99–1.00×, at full host speed. This is the documented limit: the stage-0 cross-step lookahead, which the ablation also uses, already captures most of the speculative gain.
   - Run 2's row 15 miss was a host-load spike.
@@ -172,7 +185,7 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 <a name="italiano"></a>
 ## 🇮🇹 Documentazione in Italiano
 
-`tesseract-fabric` è un runtime di inferenza distribuita in puro Rust, **senza alcun crate esterno**. Esegue LLM transformer su cluster eterogenei (Mac Apple Silicon, workstation Linux, dispositivi ARM64) tramite socket TCP reali. Un cluster H-TEP a 4 rank riproduce **bit per bit** un singolo nodo su cinque checkpoint GGUF reali. Passa 122 test, con `cargo fmt --check` e `cargo clippy -D warnings` puliti.
+`tesseract-fabric` è un runtime di inferenza distribuita in puro Rust, **senza alcun crate esterno**. Esegue LLM transformer su cluster eterogenei (Mac Apple Silicon, workstation Linux, dispositivi ARM64) tramite socket TCP reali. Un cluster H-TEP a 4 rank riproduce **bit per bit** un singolo nodo su cinque checkpoint GGUF reali. Passa 126 test, con `cargo fmt --check` e `cargo clippy -D warnings` puliti.
 
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-light.svg#gh-light-mode-only)
 ![tesseract-fabric architecture: clients, coordinator, H-TEP group or pipeline, KV fabric, TesseractWire](docs/images/architecture-dark.svg#gh-dark-mode-only)
@@ -187,7 +200,8 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 4. **`mmap` zero-copy e kernel quantizzati SIMD**:
    * loader GGUF (v2 / v3) e SafeTensors;
    * pesi F16 / BF16 / Q8_0 / Q6_K / Q5_0 / Q4_K / Q4_0, con kernel interi NEON (`sdot`) e AVX2;
-   * su un M3 Max: 25–30 GMAC/s per thread con una riga, fino a ≈ 58 GMAC/s con quattro righe.
+   * su un M3 Max: 25–30 GMAC/s per thread con una riga, fino a ≈ 58 GMAC/s con quattro righe;
+   * **GPU NVIDIA** (`TESSERACT_BACKEND=cuda`, Linux): driver, NVRTC e cuBLAS vengono aperti con `dlopen` a runtime, quindi ancora nessun crate e nessun passo di build. Ogni nodo tiene i propri layer in VRAM; i layer esatti coincidono con la CPU bit per bit. Su una RTX 5090 Llama-3.2-3B genera 128 tok/s, contro i 7,6 del Ryzen 9 9950X3D della stessa macchina.
 5. **Server compatibile OpenAI e dashboard web**: `tesseract-serve` trasmette in SSE e supporta il continuous batching di chat concorrenti (`--sessions N`) e modelli draft di supporto (`--draft-model`).
 
 ---
@@ -229,7 +243,7 @@ Esecuzioni reali, registrate da `scripts/make_screenshots.py` (niente di simulat
 #### 1. Compilare e testare
 ```bash
 cargo build --release
-cargo test --release      # 122 test; la prima esecuzione scarica ≈ 2,9 GB di checkpoint GGUF pubblici in models/
+cargo test --release      # 126 test; la prima esecuzione scarica ≈ 2,9 GB di checkpoint GGUF pubblici in models/
 ```
 
 #### 2. Chat con un checkpoint reale su un cluster di 4 nodi in-process
@@ -257,7 +271,7 @@ tesseract-node --role worker --id 3 --listen 0.0.0.0:7000 --discover --cluster-s
 # coordinatore: attende 4 worker, li sonda, risolve la topologia, assegna i ruoli e serve
 tesseract-serve --discover 4 --cluster-secret s3cret --model model.gguf --http 0.0.0.0:8080 --api-key "$TESSERACT_API_KEY"
 ```
-Su una LAN fidata, aggiungere `--lan-broadcast` per trovare i peer senza seed. La dashboard si apre come `http://host:8080/#key=<CHIAVE>`.
+Su una LAN fidata, aggiungere `--lan-broadcast` per trovare i peer senza seed. La dashboard si apre come `http://host:8080/#key=<CHIAVE>`. Su un worker Linux con GPU NVIDIA, anteporre `TESSERACT_BACKEND=cuda` al comando del worker.
 
 #### 5. Benchmark
 ```bash
@@ -306,12 +320,23 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 - **Risorse annunciate**: i nodi annunciano la memoria *disponibile in quel momento* (Linux `MemAvailable`; macOS calcolata come Monitoraggio Attività), non la RAM installata.
 
 ### 📊 Stato del progetto
-- **122/122 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 nella v1.2.0: cifratura, iniezione di guasti, FIFO; 6 nella v1.3.0: X25519, forward secrecy, record paralleli, il corpus verificato con OpenSSL), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
+- **126/126 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 nella v1.2.0: cifratura, iniezione di guasti, FIFO; 6 nella v1.3.0: X25519, forward secrecy, record paralleli, il corpus verificato con OpenSSL; 4 nella v1.4.0: i kernel CUDA confrontati con la CPU, il back-off del controllore speculativo, il footprint di un checkpoint reale nel planner), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
 - **Inferenza distribuita esatta**: H-TEP a 4 rank coincide con un singolo nodo su 40/40 token e 40/40 righe di logit per SmolLM2, Qwen2.5, Qwen3 e Llama 3.2 (modelli densi; il routing degli expert MoE non rientra nella garanzia di esattezza).
 - **Primo benchmark fisico** (due macchine in LAN a 5 GbE: un portatile M3 Max e un Ryzen 9 9950X3D, solo CPU; [risultati](docs/REAL_CLUSTER_BENCHMARK.md#first-physical-run-2026-11-17)):
   - Tesseract-Fabric tiene i layer sulla macchina più veloce e va 1,4–1,7× l'anello stile Exo e 2,4× il tensor parallelism.
   - Con modelli che stanno in una sola macchina eguaglia (SmolLM2-135M) o resta indietro di ≈ 13 % (Llama-3.2-1B) rispetto a quella macchina da sola.
   - La cifratura non ha un costo misurabile.
+- **Secondo benchmark fisico, con la RTX 5090 della workstation** (`TESSERACT_BACKEND=cuda`; [risultati](docs/REAL_CLUSTER_BENCHMARK.md#second-physical-run-rtx-5090-2026-11-17)). tok/s in decodifica, due passate, traffico cifrato:
+
+  | Modello | M3 Max (CPU) | Ryzen 9 9950X3D (CPU) | RTX 5090 (CUDA) | M3 Max + RTX 5090, Tesseract-Fabric | stesso cluster, anello Exo / tensor parallel |
+  |---|---:|---:|---:|---:|---:|
+  | SmolLM2-135M | 339–341 | 118–125 | 385–435 | 421–441 | 180–187 / n.d. |
+  | Llama-3.2-1B | 40 | 19 | 253 | 244 | 66–67 / 22 |
+  | Llama-3.2-3B | 16 | 7,6 | 127–128 | 124–125 | 26–27 / 7–8 |
+  | Llama-3.2-3B, diviso 14 + 14 layer | — | — | — | 22–23 | 25–32 / 7–9 |
+
+  - Con la RTX 5090 dichiarata primaria, il cluster resta entro il 2–4 % della GPU da sola.
+  - Quando il modello va diviso, lo stadio sulla CPU dell'M3 Max limita la velocità. La divisione resta comunque 2,2–2,5× più veloce che usando la CPU della workstation al posto della GPU, e 1,4× l'M3 Max da solo.
 - **Scorecard del benchmark**: 14/15 e 13/15 nelle due run finali consecutive.
   - La riga 9 dello Scenario 2 (la speculazione che batte la propria ablazione su un cluster eterogeneo) arriva alla parità, 0,99–1,00×, con l'host a piena velocità. È il limite documentato: il lookahead dello stage 0, usato anche dall'ablazione, cattura già quasi tutto il guadagno speculativo.
   - La riga 15 mancata nella run 2 è dovuta a un picco di carico sull'host.
@@ -334,7 +359,7 @@ A self-contained distributed transformer-inference engine in pure Rust — **zer
 * **Exo-Ring-Pipeline**: layer-sharded ring pipeline, one token per pass, FP16 activations.
 * **RDMA-Tensor-Parallel**: Megatron-style tensor parallelism, two synchronous AllReduce barriers per layer.
 
-Everything below is implemented and executed, with no mocks or stubs: the tensor runtime and GEMM micro-kernels, the MoE transformer, the activation codec, speculative trees and lossless verification, expert pre-staging, paged KV with LSE-merged attention, the `TesseractWire` protocol with CRC32C, link-shaped multipath transport, the topology solver, the worker/coordinator daemons, and the benchmark harness. `cargo test --release` runs 122 tests (46 unit, 31 mathematical / kernel verifications, 14 multi-node socket tests, 6 V8.0 production tests on real files and sockets, 9 V9.0 tests on real third-party checkpoints, 6 V10.0 tests, 9 security tests, 1 fault-injection test). The first run downloads six public GGUF checkpoints (≈ 2.9 GB) into the git-ignored `models/` directory. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean, and `.github/workflows/ci.yml` runs all three on Linux and macOS.
+Everything below is implemented and executed, with no mocks or stubs: the tensor runtime and GEMM micro-kernels, the MoE transformer, the activation codec, speculative trees and lossless verification, expert pre-staging, paged KV with LSE-merged attention, the `TesseractWire` protocol with CRC32C, link-shaped multipath transport, the topology solver, the worker/coordinator daemons, and the benchmark harness. `cargo test --release` runs 126 tests (46 unit, 32 mathematical / kernel verifications, 14 multi-node socket tests, 6 V8.0 production tests on real files and sockets, 10 V9.0 tests on real third-party checkpoints, 6 V10.0 tests, 9 security tests, 1 fault-injection test, 2 CUDA tests that run where an NVIDIA GPU is present). The first run downloads six public GGUF checkpoints (≈ 2.9 GB) into the git-ignored `models/` directory. `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean, and `.github/workflows/ci.yml` runs all three on Linux and macOS.
 
 **v1.0.0 (Gold Release)** ([details](#v100-gold-release-drafting-on-the-studio-a-clock-regime-aware-planner-and-the-scenario-2-limit)):
 * zero external crates, 100/100 tests, and bit-for-bit single-node parity of 4-rank H-TEP on five real GGUF checkpoints (K-quants included);
@@ -375,7 +400,7 @@ It still uses zero external crates.
 
 ```bash
 cargo build --release
-cargo test --release                                   # 122 tests (first run downloads ≈ 2.9 GB of GGUF checkpoints into models/)
+cargo test --release                                   # 126 tests (first run downloads ≈ 2.9 GB of GGUF checkpoints into models/)
 cargo run --release --bin tesseract-bench              # all scenarios → stdout + bench_results.md
 cargo run --release --bin tesseract-bench -- --quick   # shorter run (48 tokens, 2 rounds, 2K/8K contexts)
 cargo run --release --bin tesseract-bench -- --scenarios 3 --contexts 2048,65536   # select scenarios / contexts
@@ -1932,6 +1957,7 @@ src/
   tensor/quant.rs          V8: Q8_0 / Q4_0 / F16 / BF16 formats, zero-copy QuantView, NEON / AVX2 / scalar integer-dot GEMMs
   tensor/kquant.rs         V9: Q4_K / Q5_K / Q6_K / Q5_0 / Q4_1 / Q5_1 layouts, encoders, group-scaled integer-dot kernel
   tensor/accel.rs          V8: Apple Accelerate cblas_sgemm (AMX) backend + TESSERACT_BACKEND switch
+  tensor/cuda.rs           1.4: CUDA backend (dlopen libcuda / NVRTC / cuBLAS; qmv, exact qmv_fixed, dequant kernels; weights resident in VRAM)
   loader/mmap.rs           V8: POSIX mmap / madvise RAII mapping (read fallback off Unix)
   loader/gguf.rs           V8: GGUF v2/v3 parser + writer
   loader/safetensors.rs    V8: SafeTensors parser + writer
@@ -1969,7 +1995,7 @@ tests/math_verification.rs FWHT, HRQ-EF, LSE merge (4K–16K, 4/8 shards), tree 
 tests/cluster_e2e.rs       live socket clusters: all engines, braid commits, determinism, disaggregated KV, edge drafter, brownout, solver
 tests/production_v8.rs     GGUF / SafeTensors mmap round trips, 4-node H-TEP from Q8_0 / Q4_0 files, quantized kernels, BPE, UDP discovery, HTTP / SSE
 tests/production_v9.rs     real SmolLM2 / Qwen2.5 / Qwen3 / Llama 3.2 checkpoints, K-quants, templates, exactness, prefix cache, hot-join, concurrency
-examples/                  avx2_check, accel_crossover, accel_moe (Accelerate thresholds), kquant_bench, gguf_inspect, cluster_probe (real model: single node vs clusters)
+examples/                  avx2_check, accel_crossover, accel_moe (Accelerate thresholds), kquant_bench, gguf_inspect, cluster_probe (real model: single node vs clusters), crypto_bench, cuda_bench (GPU vs CPU per weight shape)
 ```
 
 ---

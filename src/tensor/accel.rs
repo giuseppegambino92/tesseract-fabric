@@ -6,14 +6,20 @@
 //!   quantized weights used with prefill-sized batches are dequantized in
 //!   row tiles and multiplied there too (small decode batches keep the
 //!   integer-dot kernels, which read 3.8–7.1× fewer weight bytes).
+//! * **CUDA (Linux)**: NVIDIA GPUs through the driver, NVRTC and cuBLAS
+//!   libraries opened with `dlopen` at run time ([`super::cuda`]). Every
+//!   quantized / half-precision weight matrix lives in VRAM after its first
+//!   use and each product runs there; exact-accumulation layers and dense
+//!   f32 matrices stay on the CPU.
 //! * **Portable** (default, every target): the in-tree register-tiled
 //!   kernels plus NEON / AVX2 integer dots (`tensor::quant`).
 //!
-//! The backend is chosen once from `TESSERACT_BACKEND=accelerate|portable`
-//! (default `portable`, so `tesseract-bench`'s engine comparisons keep strict
-//! kernel parity) and can be overridden in-process with [`set_backend`].
-//! Accelerate uses its own internal threads, so it is never enabled
-//! implicitly inside the equal-lanes engine comparisons.
+//! The backend is chosen once from
+//! `TESSERACT_BACKEND=portable|accelerate|cuda|auto` (default `portable`, so
+//! `tesseract-bench`'s engine comparisons keep strict kernel parity; `auto`
+//! picks CUDA when a GPU is found) and can be overridden in-process with
+//! [`set_backend`]. Accelerate and CUDA run outside the equal-lanes rule, so
+//! they are never enabled implicitly inside the engine comparisons.
 
 use super::quant::QuantView;
 use super::Tensor2D;
@@ -23,6 +29,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub enum Backend {
     Portable = 1,
     Accelerate = 2,
+    Cuda = 3,
 }
 
 impl Backend {
@@ -30,6 +37,7 @@ impl Backend {
         match self {
             Backend::Portable => "portable",
             Backend::Accelerate => "accelerate",
+            Backend::Cuda => "cuda",
         }
     }
 }
@@ -52,9 +60,22 @@ pub fn backend() -> Backend {
     match BACKEND.load(Ordering::Relaxed) {
         1 => Backend::Portable,
         2 => Backend::Accelerate,
+        3 => Backend::Cuda,
         _ => {
             let b = match std::env::var("TESSERACT_BACKEND").as_deref() {
                 Ok("accelerate") | Ok("amx") if ACCELERATE_AVAILABLE => Backend::Accelerate,
+                Ok("cuda") | Ok("gpu") => {
+                    if super::cuda::available() {
+                        Backend::Cuda
+                    } else {
+                        eprintln!(
+                            "[backend] TESSERACT_BACKEND=cuda but CUDA is unavailable ({}); using the portable kernels",
+                            super::cuda::init_error().unwrap_or_default()
+                        );
+                        Backend::Portable
+                    }
+                }
+                Ok("auto") if super::cuda::available() => Backend::Cuda,
                 _ => Backend::Portable,
             };
             BACKEND.store(b as u8, Ordering::Relaxed);
@@ -64,19 +85,50 @@ pub fn backend() -> Backend {
 }
 
 /// Override the backend for this process. Returns the backend actually set
-/// (Accelerate falls back to portable where it does not exist).
+/// (Accelerate / CUDA fall back to portable where they do not exist).
 pub fn set_backend(b: Backend) -> Backend {
-    let b = if b == Backend::Accelerate && !ACCELERATE_AVAILABLE {
-        Backend::Portable
-    } else {
-        b
+    let b = match b {
+        Backend::Accelerate if !ACCELERATE_AVAILABLE => Backend::Portable,
+        Backend::Cuda if !super::cuda::available() => Backend::Portable,
+        b => b,
     };
     BACKEND.store(b as u8, Ordering::Relaxed);
     b
 }
 
+thread_local! {
+    static FORCE_PORTABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` on this thread with the portable kernels whatever the process
+/// backend is. Used where separate machines must derive bit-identical
+/// results from the same seeds (codec calibration), which only the portable
+/// kernels guarantee.
+pub fn with_portable<R>(f: impl FnOnce() -> R) -> R {
+    let prev = FORCE_PORTABLE.with(|c| c.replace(true));
+    let r = f();
+    FORCE_PORTABLE.with(|c| c.set(prev));
+    r
+}
+
+fn forced_portable() -> bool {
+    FORCE_PORTABLE.with(|c| c.get())
+}
+
 pub fn accelerate_active() -> bool {
-    ACCELERATE_AVAILABLE && backend() == Backend::Accelerate
+    ACCELERATE_AVAILABLE && backend() == Backend::Accelerate && !forced_portable()
+}
+
+pub fn cuda_active() -> bool {
+    super::cuda::CUDA_SUPPORTED && backend() == Backend::Cuda && !forced_portable()
+}
+
+/// One line for logs and reports: "cuda (NVIDIA GeForce RTX 5090 · …)".
+pub fn describe() -> String {
+    match backend() {
+        Backend::Cuda => format!("cuda ({})", super::cuda::device_name().unwrap_or_default()),
+        b => b.name().to_string(),
+    }
 }
 
 #[cfg(target_os = "macos")]

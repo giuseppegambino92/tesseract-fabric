@@ -1550,6 +1550,39 @@ fn roofline_uses_measured_acceptance_when_large_trees_saturate() {
     assert!(small >= 45, "N = 2 chosen {small}/60: {picks:?}");
 }
 
+#[test]
+fn roofline_backs_off_probing_a_drafter_that_is_never_accepted() {
+    use tesseract_fabric::speculative::RooflineController;
+    // a target far faster than its drafter: every tree costs 3× a single
+    // row and emits only the bonus token; periodic re-probes must thin out
+    // (doubling intervals) instead of costing a tree every 24 epochs
+    let q: Vec<f32> = (0..16).map(|i| 0.9f32.powi(i)).collect();
+    let cost = |n: usize| if n == 1 { 4_000_000u64 } else { 12_000_000 };
+    let mut c = RooflineController::new(vec![1, 2, 3, 4, 6, 8, 16]);
+    let mut picks = Vec::new();
+    for _ in 0..1000 {
+        let n = c.choose();
+        picks.push(n);
+        c.record(n, &q, 1, cost(n), cost(n));
+    }
+    let trees_late = picks[200..].iter().filter(|&&n| n > 1).count();
+    // a fixed 24-epoch probe would spend ~33 tree epochs in the last 800
+    assert!(trees_late <= 6, "{trees_late} tree epochs after warm-up");
+    // once trees start being accepted, the next probe (at most
+    // PROBE_EVERY_MAX epochs away) finds it and trees take over
+    let mut late = 0;
+    for e in 0..600 {
+        let n = c.choose();
+        // now a tree is cheap (1.5× a row) and emits 3 tokens
+        let w = if n == 1 { 4_000_000 } else { 6_000_000 };
+        c.record(n, &q, if n > 1 { 3 } else { 1 }, w, w);
+        if e >= 400 {
+            late += (n > 1) as usize;
+        }
+    }
+    assert!(late >= 150, "trees chosen {late}/200 once accepted");
+}
+
 // ---------------------------------------------------------------- V6.2
 
 #[test]

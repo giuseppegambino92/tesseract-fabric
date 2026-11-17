@@ -54,7 +54,7 @@ fn arg(args: &[String], k: &str) -> Option<String> {
 }
 
 fn usage() -> ! {
-    eprintln!("usage:\n  tesseract-node --role worker --id <n> --listen <ip:port> [--discover [--seeds a,b] [--cluster-secret S]] [--gguf PATH | --safetensors PATH]\n  tesseract-node --role coordinator --discover <N> [--model tiny|bench|PATH] [--quant q8_0|q4_0|f16|bf16]\n  tesseract-node --role export --model tiny|bench --format gguf|safetensors [--quant q8_0|q4_0|q4_k|q6_k|f16|bf16] --out PATH\n  tesseract-node --role chat --model FILE --prompt TEXT [--system TEXT] [--local-nodes 4] [--engine auto|htep|pipeline] [--draft-model SMALL.gguf] [--tokens 128] [--temperature 0]\n  tesseract-node --role coordinator --listen <ip:port> --peers <a,b,..> --profile <p,q,..> [--engine tesseract|exo|tp|all] [--model bench|tiny|long] [--tokens N] [--temperature T] [--emulate-links] [--holo-bits B] [--budget N]");
+    eprintln!("usage:\n  tesseract-node --role worker --id <n> --listen <ip:port> [--discover [--seeds a,b] [--cluster-secret S]] [--gguf PATH | --safetensors PATH]\n  tesseract-node --role coordinator --discover <N> [--model tiny|bench|PATH] [--quant q8_0|q4_0|f16|bf16]\n  tesseract-node --role export --model tiny|bench --format gguf|safetensors [--quant q8_0|q4_0|q4_k|q6_k|f16|bf16] --out PATH\n  tesseract-node --role chat --model FILE --prompt TEXT [--system TEXT] [--local-nodes 4] [--engine auto|htep|pipeline] [--draft-model SMALL.gguf] [--tokens 128] [--temperature 0]\n  tesseract-node --role coordinator --listen <ip:port> --peers <a,b,..> --profile <p,q,..> [--engine tesseract|exo|tp|all] [--model bench|tiny|long] [--tokens N] [--temperature T] [--emulate-links] [--ram-mb A,B,..] [--holo-bits B] [--budget N]");
     eprintln!(
         "profiles: {}",
         PRESETS.iter().map(|p| p.key).collect::<Vec<_>>().join(", ")
@@ -385,8 +385,11 @@ fn worker(args: &[String]) {
     }
     let w = start_worker(id, &listen.ip().to_string(), listen.port()).expect("bind worker");
     eprintln!(
-        "tesseract-node worker {id}: node {} · KV service {} · draft service {}",
-        w.addr, w.kv_addr, w.draft_addr
+        "tesseract-node worker {id}: node {} · KV service {} · draft service {} · kernels {}",
+        w.addr,
+        w.kv_addr,
+        w.draft_addr,
+        tesseract_fabric::tensor::accel::describe()
     );
     let _beacon = args.iter().any(|a| a == "--discover").then(|| {
         let key = ClusterKey::from_secret(
@@ -490,12 +493,33 @@ fn coordinator(args: &[String]) {
             spec
         })
         .collect();
+    // --ram-mb a,b,..: memory each node may use for the model (a node with
+    // less memory than the model forces a layer split across machines)
+    let mut specs = specs;
+    if let Some(r) = arg(args, "--ram-mb") {
+        let caps: Vec<f64> = r
+            .split(',')
+            .map(|x| x.trim().parse().expect("--ram-mb takes MB per peer"))
+            .collect();
+        assert_eq!(caps.len(), specs.len(), "one --ram-mb value per peer");
+        for (s, c) in specs.iter_mut().zip(caps) {
+            s.available_ram_mb = c;
+        }
+    }
     let slow = if emulate {
         slowdowns(&specs)
     } else {
         vec![1.0; peers.len()]
     };
     let mut tess = TesseractOptions::default();
+    // real checkpoints run with the same exact settings as `chat` and
+    // `tesseract-serve`: lossless activations between stages, f32 H-TEP
+    // reductions, prompt-lookup drafting
+    if cfg.source.is_file() {
+        tess.codec = 0;
+        tess.htep_reduce_f32 = true;
+        tess.draft_lookup = true;
+    }
     if let Some(b) = arg(args, "--holo-bits").and_then(|s| s.parse().ok()) {
         tess.holo_bits = b;
     }

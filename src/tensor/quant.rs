@@ -439,6 +439,15 @@ impl QuantView {
     pub fn byte_offset(&self) -> usize {
         self.offset
     }
+    /// Bytes between the starts of consecutive rows (≥ the row's own bytes
+    /// for a column slice).
+    pub fn row_stride(&self) -> usize {
+        self.row_stride
+    }
+    /// The whole underlying byte source (device uploads index it by `span`).
+    pub fn source_bytes(&self) -> &[u8] {
+        self.src.bytes()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,6 +1140,11 @@ pub fn gemm_fixed(x: &Tensor2D, v: Option<&QuantView>, dense: Option<&Tensor2D>)
         .map(|v| v.rows)
         .or(dense.map(|d| d.rows))
         .expect("weights");
+    if let Some(v) = v.filter(|_| super::accel::cuda_active()) {
+        if let Some(y) = super::cuda::gemm_fixed(x, v) {
+            return y;
+        }
+    }
     let acts = v.filter(|v| v.fmt.is_block()).map(|_| Q8Acts::quantize(x));
     let kernel = active_kernel();
     let mut y = vec![0i64; m * n];
@@ -1179,6 +1193,9 @@ pub fn gemm_quant(x: &Tensor2D, v: &QuantView, y: &mut Tensor2D) {
     assert_eq!(x.cols, v.cols, "activation width ≠ weight cols");
     assert_eq!((y.rows, y.cols), (x.rows, v.rows));
     let (m, n, k) = (x.rows, v.rows, v.cols);
+    if super::accel::cuda_active() && super::cuda::gemm(x, v, y) {
+        return;
+    }
     if super::accel::accelerate_active() && m >= super::accel::ACCEL_MIN_ROWS {
         super::accel::gemm_dequant_tiles(x, v, y);
         return;

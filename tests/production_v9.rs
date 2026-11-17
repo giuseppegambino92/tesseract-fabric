@@ -868,3 +868,22 @@ fn accelerate_expert_offload_matches_portable_kernels() {
         }
     }
 }
+
+#[test]
+fn the_planner_budgets_a_real_checkpoint_at_its_stored_bytes() {
+    use tesseract_fabric::topology::footprint;
+    let p = model(LLAMA32);
+    let cfg = config_from_file(&p, None).unwrap();
+    let f = footprint(&cfg, 3);
+    let planned = f.layer_bytes * cfg.n_layers as f64 + f.head_bytes;
+    let file = std::fs::metadata(&p).unwrap().len() as f64;
+    // the tied embedding / LM head is budgeted twice (lookup + readout), so
+    // the plan may exceed the file by at most that table
+    eprintln!(
+        "Llama-3.2-1B Q4_K_M: file {:.0} MB, planned {:.0} MB, f32 equivalent {:.0} MB",
+        file / 1e6,
+        planned / 1e6,
+        (cfg.n_layers * cfg.layer_params() * 4 + 2 * cfg.vocab * cfg.d_model * 4) as f64 / 1e6
+    );
+    assert!(planned > 0.9 * file && planned < 1.4 * file);
+}

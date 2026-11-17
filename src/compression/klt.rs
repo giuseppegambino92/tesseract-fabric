@@ -773,33 +773,35 @@ pub fn calibration_tokens(cfg: &crate::model::ModelConfig) -> std::sync::Arc<Vec
             .map(|s| {
                 let (head, model) = (&head, &model);
                 sc.spawn(move || {
-                    crate::tensor::prefer_performance_cores();
-                    let mut rng =
-                        crate::tensor::Rng::new(0xCA11_B8A7 ^ cfg.seed ^ ((s as u64) << 32));
-                    let mut toks: Vec<u32> = (0..prompt_len)
-                        .map(|_| rng.below(cfg.vocab) as u32)
-                        .collect();
-                    let mut kv = LocalKvCache::new(cfg.n_heads, cfg.n_kv_heads, cfg.d_head);
-                    let meta = BatchMeta::causal_prefill(0, prompt_len - 1, 1);
-                    let mut x = head.embed_tokens(&toks[..prompt_len - 1]);
-                    model.forward(&mut x, &meta, &mut kv, &mut NoObserver);
-                    kv.commit(&meta.keys, &|_| false);
-                    while toks.len() < CALIBRATION_LEN {
-                        let pos = toks.len() - 1;
-                        let meta = BatchMeta::causal_prefill(pos, 1, 2 + pos as u64);
-                        let mut x = head.embed_tokens(&toks[pos..]);
+                    crate::tensor::accel::with_portable(|| {
+                        crate::tensor::prefer_performance_cores();
+                        let mut rng =
+                            crate::tensor::Rng::new(0xCA11_B8A7 ^ cfg.seed ^ ((s as u64) << 32));
+                        let mut toks: Vec<u32> = (0..prompt_len)
+                            .map(|_| rng.below(cfg.vocab) as u32)
+                            .collect();
+                        let mut kv = LocalKvCache::new(cfg.n_heads, cfg.n_kv_heads, cfg.d_head);
+                        let meta = BatchMeta::causal_prefill(0, prompt_len - 1, 1);
+                        let mut x = head.embed_tokens(&toks[..prompt_len - 1]);
                         model.forward(&mut x, &meta, &mut kv, &mut NoObserver);
                         kv.commit(&meta.keys, &|_| false);
-                        let l = head.logits(&x, cfg.rms_eps);
-                        toks.push(
-                            if s % CALIBRATION_SAMPLED_EVERY != CALIBRATION_SAMPLED_EVERY - 1 {
-                                crate::model::argmax(l.row(0)) as u32
-                            } else {
-                                sample(&probs_from_logits(l.row(0), 1.0), &mut rng)
-                            },
-                        );
-                    }
-                    toks
+                        while toks.len() < CALIBRATION_LEN {
+                            let pos = toks.len() - 1;
+                            let meta = BatchMeta::causal_prefill(pos, 1, 2 + pos as u64);
+                            let mut x = head.embed_tokens(&toks[pos..]);
+                            model.forward(&mut x, &meta, &mut kv, &mut NoObserver);
+                            kv.commit(&meta.keys, &|_| false);
+                            let l = head.logits(&x, cfg.rms_eps);
+                            toks.push(
+                                if s % CALIBRATION_SAMPLED_EVERY != CALIBRATION_SAMPLED_EVERY - 1 {
+                                    crate::model::argmax(l.row(0)) as u32
+                                } else {
+                                    sample(&probs_from_logits(l.row(0), 1.0), &mut rng)
+                                },
+                            );
+                        }
+                        toks
+                    })
                 })
             })
             .collect();
@@ -816,6 +818,14 @@ pub fn calibration_tokens(cfg: &crate::model::ModelConfig) -> std::sync::Arc<Vec
 /// by every node of that process; separate processes derive identical
 /// results from the same seeds.
 pub fn klt_calibration(
+    cfg: &crate::model::ModelConfig,
+    boundary: usize,
+) -> std::sync::Arc<KltCalibration> {
+    // bit-identical on every machine: portable kernels only
+    crate::tensor::accel::with_portable(|| klt_calibration_portable(cfg, boundary))
+}
+
+fn klt_calibration_portable(
     cfg: &crate::model::ModelConfig,
     boundary: usize,
 ) -> std::sync::Arc<KltCalibration> {

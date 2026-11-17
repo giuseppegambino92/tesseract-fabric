@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.4.0 — CUDA backend, RTX 5090 in the physical cluster (2026-11-17)
+
+### NVIDIA GPUs (`TESSERACT_BACKEND=cuda`)
+- **New `tensor::cuda` backend, still zero crates.** On Linux the NVIDIA driver (`libcuda.so.1`), the run-time compiler (`libnvrtc`) and cuBLAS are opened with `dlopen` the first time the backend is asked for, the same way Accelerate is bound on macOS. A binary built without any NVIDIA software builds and runs unchanged; the backend reports itself unavailable and the portable kernels run.
+  - The CUDA C kernels are embedded in the binary and compiled once per process by NVRTC for the GPU's own architecture (`sm_120` CUBIN on an RTX 5090; PTX as a fallback for an NVRTC older than the GPU).
+  - `qmv`: one warp per weight row decodes the row's GGUF blocks in registers (Q4_0/1, Q5_0/1, Q8_0, Q4_K, Q5_K, Q6_K, F16, BF16, F32) and dots them with up to 8 activation rows, so a verification tree reads the weights once.
+  - Prefill-sized batches (≥ 32 rows) dequantize weight tiles to f32 in VRAM and run `cublasSgemm`.
+  - **Exact layers run on the GPU too, bit for bit.** `qmv_fixed` reproduces the canonical fixed-point product of `Linear::exact` (attention output and FFN down projections of real checkpoints): the integer dot of each 32-weight group with the Q8 activations (`__dp4a`), the same f32 operations in the same order (`__fmul_rn` / `__fadd_rn`, which are never fused), and integer sums that do not depend on order. GPU and CPU results are identical for every block format.
+  - **Weights stay in VRAM.** A node uploads its own layers when its stage starts (`Linear::prefetch`) and keeps them for the process lifetime. A matrix that does not fit stays on the CPU kernels.
+  - `TESSERACT_BACKEND=auto` picks CUDA when a GPU is found. The default stays `portable`, so the engine comparisons keep strict kernel parity. Workers print their kernels at start-up (`kernels cuda (NVIDIA GeForce RTX 5090 · sm_120 · 31.4 GiB)`).
+  - **Discovery advertises the GPU.** A worker running `--discover` under the CUDA backend measures its GPU (device-to-device copy bandwidth, `cublasSgemm` throughput, free VRAM) and announces those numbers as a discrete-GPU workstation, instead of its CPU's.
+  - `TESSERACT_CUDA_TRACE=1` prints how many products ran on the GPU, their mean latency and their share of wall time. `cargo run --release --example cuda_bench` times the backend against the CPU kernels per weight shape.
+
+### Planner and engine
+- **Real checkpoints are planned at their stored size.** The solver budgeted every model as f32 (4 bytes per parameter), so a 2 GB Q4_K_M file counted as ≈ 14.5 GB. On a machine with little free memory, `chat` refused models that fit easily ("model does not fit cluster RAM"). The footprint of a GGUF / SafeTensors model now comes from its tensors' real bytes.
+- **The physical benchmark runs real checkpoints with the production settings** of `chat` and `tesseract-serve`: lossless activations between stages, f32 H-TEP reductions and prompt-lookup drafting. It used the synthetic models' defaults, which include a KLT codec whose calibration runs the model on the CPU for minutes at start-up: a 3B model split over two machines timed out (600 s) before its first token.
+- **KLT calibration always uses the portable kernels** (`accel::with_portable`), so two machines with different backends still derive the same codec basis.
+- **The speculation controller backs off from a drafter that is never accepted.** It re-probed a 2-row tree every 24 epochs. When the target is far faster than its drafter (an RTX 5090 verifying, the drafter on a laptop CPU), every probe cost about 3 single-row epochs for nothing. The interval now doubles after each unaccepted probe, up to 384 epochs, and returns to 24 as soon as a probe is accepted.
+- `tesseract-node --role coordinator --ram-mb A,B,..` caps the memory each node may use for the model, to test splits that real memory would not force.
+
+### Benchmarks
+- **Second physical run** (`docs/REAL_CLUSTER_BENCHMARK.md`): the same M3 Max laptop and Ryzen 9 9950X3D workstation over 5 GbE, now with the workstation's RTX 5090.
+  - **Single node:** the RTX 5090 decodes Llama-3.2-1B at 253 tok/s and Llama-3.2-3B at 128 tok/s. That is 13–17× the workstation's own CPU (19 and 7.6) and 6–8× the M3 Max CPU engine (40 and 16).
+  - **RTX 5090 as primary:** Tesseract-Fabric runs 244 tok/s (1B) and 125 tok/s (3B), within 2–4 % of the GPU alone. That is 2.3–4.7× the Exo-style ring and 11–17× tensor parallelism, which both put layers on the laptop's CPU.
+  - **Llama-3.2-3B split 14 + 14 across both** under a memory cap: 22–23 tok/s, 2.2–2.5× the same split with the workstation's CPU instead of its GPU. The laptop's CPU stage bounds the split.
+  - **Roles inverted** (the laptop declared faster): Tesseract-Fabric equals the laptop alone, where 1.3.0 was 13 % slower.
+
+### Tests (4 new, 126 in total)
+- `tests/cuda.rs`: every weight format, batches of 1–40 rows (`qmv` and the cuBLAS path), odd widths, row and column slices against an f64 reference; the exact kernel against the CPU's fixed-point sums, bit for bit. Without a GPU both report why and pass.
+- The controller's probe back-off, and its return to trees once they are accepted.
+- The planner's footprint of a real Q4_K_M checkpoint is its file size (± the tied embedding table), not its f32 equivalent.
+
 ## 1.3.0 — Forward secrecy, parallel record layer, first physical benchmark (2026-11-17)
 
 ### Security

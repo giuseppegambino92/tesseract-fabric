@@ -6,6 +6,7 @@
 //! accumulator lanes so LLVM auto-vectorises them to NEON / AVX2.
 
 pub mod accel;
+pub mod cuda;
 pub mod determinism;
 pub mod eigen;
 pub mod kquant;
@@ -604,10 +605,15 @@ impl Linear {
         }
     }
 
-    /// madvise(WILLNEED) the weight bytes of a file-backed layer.
+    /// madvise(WILLNEED) the weight bytes of a file-backed layer; under the
+    /// CUDA backend, also upload them to VRAM now (stage start-up) instead
+    /// of on first use.
     pub fn prefetch(&self) {
         if let Some(v) = &self.q {
             v.prefetch();
+            if accel::cuda_active() {
+                cuda::preload(v);
+            }
         }
     }
 
