@@ -1,5 +1,5 @@
 # Tesseract-Fabric 🚀
-### Pure-Rust Distributed AI Inference Engine (v1.1.0)
+### Pure-Rust Distributed AI Inference Engine (v1.2.0)
 
 <p>
   <a href="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg"></a>
@@ -154,7 +154,7 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 - **Resource reporting**: nodes advertise memory *available now* (Linux `MemAvailable`; macOS computed like Activity Monitor), not installed RAM.
 
 ### 📊 Status
-- **116/116 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 since: encryption, fault injection, FIFO), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
+- **116/116 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 in v1.2.0: encryption, fault injection, FIFO), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
 - **Exact distributed inference**: 4-rank H-TEP matches a single node on 40/40 tokens and 40/40 logit rows for SmolLM2, Qwen2.5, Qwen3 and Llama 3.2 (dense models; MoE expert routing is not covered by the exactness guarantee).
 - **Benchmark scorecard**: 14/15 and 13/15 in the two final back-to-back runs.
   - Scenario 2 row 9 (speculation beating its own ablation on a heterogeneous cluster) reaches parity, 0.99–1.00×, at full host speed. This is the documented limit: the stage-0 cross-step lookahead, which the ablation also uses, already captures most of the speculative gain.
@@ -300,7 +300,7 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 - **Risorse annunciate**: i nodi annunciano la memoria *disponibile in quel momento* (Linux `MemAvailable`; macOS calcolata come Monitoraggio Attività), non la RAM installata.
 
 ### 📊 Stato del progetto
-- **116/116 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 successivi: cifratura, iniezione di guasti, FIFO), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
+- **116/116 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 nella v1.2.0: cifratura, iniezione di guasti, FIFO), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
 - **Inferenza distribuita esatta**: H-TEP a 4 rank coincide con un singolo nodo su 40/40 token e 40/40 righe di logit per SmolLM2, Qwen2.5, Qwen3 e Llama 3.2 (modelli densi; il routing degli expert MoE non rientra nella garanzia di esattezza).
 - **Scorecard del benchmark**: 14/15 e 13/15 nelle due run finali consecutive.
   - La riga 9 dello Scenario 2 (la speculazione che batte la propria ablazione su un cluster eterogeneo) arriva alla parità, 0,99–1,00×, con l'host a piena velocità. È il limite documentato: il lookahead dello stage 0, usato anche dall'ablazione, cattura già quasi tutto il guadagno speculativo.

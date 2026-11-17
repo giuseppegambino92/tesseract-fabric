@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — encrypted node traffic, fault tolerance, x86 kernels
+## 1.2.0 — Encrypted node traffic, fault tolerance, x86 kernels (2026-11-17)
 
 ### Security
 - **Encrypted node-to-node traffic** (`wire::crypto`, `wire::auth`). With a cluster secret of your own, every TesseractWire connection now runs a mutual HMAC-SHA256 handshake (protocol `TFA2`), then carries its frames in ChaCha20-Poly1305 records under a per-connection key from HKDF-SHA256.
@@ -8,7 +8,7 @@
   - SHA-256, HMAC, HKDF, ChaCha20, Poly1305 and the AEAD are implemented in-tree (still zero crates). They are checked against the FIPS 180-4, RFC 4231, RFC 5869 and RFC 8439 vectors, and were differentially tested against OpenSSL on 300 random inputs (0 mismatches).
   - Throughput is ≈ 500 MB/s per core.
   - `--wire-plaintext` (on every node) opts out on trusted dedicated links. With the public default secret, traffic stays authenticated but unencrypted.
-  - **Nodes of 1.1.0 and this version cannot connect to each other.**
+  - **Nodes of 1.1.0 and 1.2.0 cannot connect to each other: upgrade every node together.**
 
 ### Reliability
 - **A node lost mid-request no longer hangs the request or kills the slot.**
