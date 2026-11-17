@@ -1,6 +1,6 @@
 [package]
 name = "tesseract-fabric"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2021"
 description = "Heterogeneous distributed transformer inference engine: holographic activation compression, speculative tree-braid pipelining, lookahead expert pre-staging, disaggregated LSE-merged KV fabric, and a custom multipath wire protocol."
 license = "Apache-2.0"

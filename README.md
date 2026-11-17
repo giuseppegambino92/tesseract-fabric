@@ -1,5 +1,5 @@
 # Tesseract-Fabric 🚀
-### Pure-Rust Distributed AI Inference Engine (v1.2.0)
+### Pure-Rust Distributed AI Inference Engine (v1.3.0)
 
 <p>
   <a href="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/giuseppegambino92/tesseract-fabric/actions/workflows/ci.yml/badge.svg"></a>
@@ -155,7 +155,7 @@ Benchmark clusters emulate every node as threads on one host, with link shaping 
 - **Resource reporting**: nodes advertise memory *available now* (Linux `MemAvailable`; macOS computed like Activity Monitor), not installed RAM.
 
 ### 📊 Status
-- **122/122 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 in v1.2.0: encryption, fault injection, FIFO; 6 since: X25519, forward secrecy, parallel records, the OpenSSL-verified corpus), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
+- **122/122 tests** (100 in v1.0.0, 10 security tests in v1.1.0, 6 in v1.2.0: encryption, fault injection, FIFO; 6 in v1.3.0: X25519, forward secrecy, parallel records, the OpenSSL-verified corpus), zero external crates, CI for Linux and macOS (`.github/workflows/ci.yml`).
 - **Exact distributed inference**: 4-rank H-TEP matches a single node on 40/40 tokens and 40/40 logit rows for SmolLM2, Qwen2.5, Qwen3 and Llama 3.2 (dense models; MoE expert routing is not covered by the exactness guarantee).
 - **First physical run** (two machines on a 5 GbE LAN: an M3 Max laptop and a Ryzen 9 9950X3D, CPU only; [results](docs/REAL_CLUSTER_BENCHMARK.md#first-physical-run-2026-11-17)):
   - Tesseract-Fabric keeps the layers on the faster machine and runs 1.4–1.7× the Exo-style ring and 2.4× tensor parallelism.
@@ -306,7 +306,7 @@ I cluster di benchmark emulano ogni nodo come thread su un unico host, con link 
 - **Risorse annunciate**: i nodi annunciano la memoria *disponibile in quel momento* (Linux `MemAvailable`; macOS calcolata come Monitoraggio Attività), non la RAM installata.
 
 ### 📊 Stato del progetto
-- **122/122 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 nella v1.2.0: cifratura, iniezione di guasti, FIFO; 6 successivi: X25519, forward secrecy, record paralleli, il corpus verificato con OpenSSL), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
+- **122/122 test** (100 nella v1.0.0, 10 di sicurezza nella v1.1.0, 6 nella v1.2.0: cifratura, iniezione di guasti, FIFO; 6 nella v1.3.0: X25519, forward secrecy, record paralleli, il corpus verificato con OpenSSL), zero crate esterni, CI per Linux e macOS (`.github/workflows/ci.yml`).
 - **Inferenza distribuita esatta**: H-TEP a 4 rank coincide con un singolo nodo su 40/40 token e 40/40 righe di logit per SmolLM2, Qwen2.5, Qwen3 e Llama 3.2 (modelli densi; il routing degli expert MoE non rientra nella garanzia di esattezza).
 - **Primo benchmark fisico** (due macchine in LAN a 5 GbE: un portatile M3 Max e un Ryzen 9 9950X3D, solo CPU; [risultati](docs/REAL_CLUSTER_BENCHMARK.md#first-physical-run-2026-11-17)):
   - Tesseract-Fabric tiene i layer sulla macchina più veloce e va 1,4–1,7× l'anello stile Exo e 2,4× il tensor parallelism.

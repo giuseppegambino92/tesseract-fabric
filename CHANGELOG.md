@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — forward secrecy, faster and parallel record layer
+## 1.3.0 — Forward secrecy, parallel record layer, first physical benchmark (2026-11-17)
 
 ### Security
 - **Forward secrecy for node traffic** (handshake `TFA3`). Every connection now runs an ephemeral X25519 exchange inside the authenticated handshake.
@@ -9,7 +9,7 @@
   - Both MACs cover the ephemeral keys, so an attacker without the secret cannot substitute their own exchange (tested by flipping one bit of a key through a relay). Small-order values (an all-zero shared secret) are refused.
   - X25519 (RFC 7748) is implemented in-tree: 51-bit limbs, a constant-time Montgomery ladder, ≈ 25 µs per scalar multiplication on an M3 Max. It passes the RFC vectors, including the 1000-iteration chain.
   - Session keys are wiped when a connection closes.
-  - **Nodes of 1.2.0 and this version cannot connect to each other**: upgrade every node together.
+  - **Nodes of 1.2.0 and 1.3.0 cannot connect to each other**: upgrade every node together.
 
 ### Performance
 - **2.5× faster single-core record layer** (M3 Max, 1 MiB records: 574 → 1430 MB/s):
