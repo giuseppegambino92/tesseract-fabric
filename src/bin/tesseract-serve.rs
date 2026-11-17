@@ -277,18 +277,23 @@ fn main() {
         leave_after: Duration::from_secs(3),
     });
     let server = Server::bind(&http, state).expect("bind http");
-    println!("listening on http://{}", server.local_addr());
+    // the two address lines callers parse; a caller may read only what it
+    // needs and close the pipe, so a failed write must never kill the server
+    // (println! would panic on EPIPE)
+    stdout_line(&format!("listening on http://{}", server.local_addr()));
     if secret == "tesseract-local" {
-        println!(
+        stdout_line(&format!(
             "discovery on udp {} (default cluster secret {:?})",
             listener.addr, secret
-        );
+        ));
     } else {
-        println!("discovery on udp {} (custom cluster secret)", listener.addr);
+        stdout_line(&format!(
+            "discovery on udp {} (custom cluster secret)",
+            listener.addr
+        ));
     }
-    // stdout carries only the two address lines above (callers read them and
-    // may close the pipe; a later println! would then kill the server with
-    // EPIPE): everything else is logged on stderr
+    // stdout carries only the two address lines above; the rest is logged
+    // on stderr
     eprintln!("node traffic: {}", node_traffic(&secret, wire_plaintext));
     eprintln!(
         "http auth: {}",
@@ -314,4 +319,12 @@ fn node_traffic(secret: &str, plaintext: bool) -> &'static str {
     } else {
         "authenticated and encrypted (ChaCha20-Poly1305, per-connection keys)"
     }
+}
+
+/// Write one line to stdout, ignoring a closed pipe (see `main`).
+fn stdout_line(line: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
 }

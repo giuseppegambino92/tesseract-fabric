@@ -17,14 +17,14 @@
   - Worker endpoints are abortable: an abort (a `Reset` carrying `ABORT_MARK`; the ordinary `Reset` between requests is unchanged) interrupts any wait inside the running engine, and the worker drops it and returns to idle (`run_worker` catches the `Aborted` unwind).
   - The server answers `cluster_error` (an SSE event, or a 503), never poisons the slot lock, and re-plans without the dead node within ≈ 3.5 s, 3 s of them spent waiting for missing beacons.
   - Before, the request waited 900 s, panicked and left its slot unusable.
-- **Fixed an intermittent server crash**: informational lines printed on stdout after the two address lines killed `tesseract-serve` with EPIPE when the reader had closed the pipe. This was the intermittent Linux CI failure in `production_v9`. They now go to stderr.
+- **Fixed an intermittent server crash**: `tesseract-serve` died with EPIPE (a `println!` panic) when the process reading its stdout closed the pipe after the lines it needed. This was the intermittent Linux CI failure in `production_v9` and `security`. The address lines are now written ignoring a closed pipe, and informational lines go to stderr.
 - Slots poisoned by an earlier panic are recovered and re-planned; `Driver::stats` skips lost nodes instead of waiting 30 s for them.
 
 ### Server
 - **FIFO slot queue**: requests waiting for an engine slot are served in arrival order, and sleep on a condition variable instead of polling every 2 ms.
 
 ### Performance
-- **x86_64 AVX2/FMA f32 kernels** (runtime-detected): a dot product and register-tiled GEMMs (4×3, 6×2, 2×4 and 1×4 tiles for the 16 ymm registers) for the batch GEMM and the lane-pool striping. They replace a portable SSE2 path that ran row by row.
+- **x86_64 AVX2/FMA f32 kernels** (runtime-detected): a dot product and register-tiled GEMMs (4×3, 6×2, 2×4 and 1×4 tiles for the 16 ymm registers) for the batch GEMM and the lane-pool striping. They replace a portable SSE2 path that ran row by row. On a native x86 CI runner a 6-row batch now costs 2.44× one row and an 8-row batch 3.29× (before: 7.1× and 7.4×). The amortization check is asserted on x86 with AVX2 as on aarch64.
 
 ### Tooling
 - **Physical cluster benchmark** (`docs/REAL_CLUSTER_BENCHMARK.md`): `tesseract-node --role coordinator … --rounds N --report FILE`.
