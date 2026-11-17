@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+use tesseract_fabric::server::json::Json;
 
 const SECRET: &str = "fault-injection test secret, not for production";
 
@@ -110,9 +111,26 @@ fn killing_a_worker_mid_generation_fails_the_request_cleanly_and_the_cluster_rec
             break a.to_string();
         }
     };
-    // the plan uses every worker; node traffic is encrypted
+    // pick a worker the solver actually uses for compute (a slower machine
+    // may get a pipeline over fewer nodes than it was offered)
     let status = get(&http, "/v1/cluster/status");
     assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    let st = Json::parse(status.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let victim = st
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .unwrap()
+        .iter()
+        .filter(|n| {
+            n.get("roles").and_then(|r| r.as_array()).is_some_and(|r| {
+                r.iter().filter_map(|x| x.as_str()).any(|x| {
+                    x.contains("Shard") || x.contains("Stage") || x.contains("Coordinator")
+                })
+            })
+        })
+        .filter_map(|n| n.get("id").and_then(|i| i.as_f64()).map(|i| i as u16))
+        .find(|id| (1..=3).contains(id))
+        .expect("a worker with a compute role");
 
     // a long streaming request; kill worker 2 once tokens are flowing
     let body = r#"{"stream":true,"max_tokens":4096,"temperature":0,"messages":[{"role":"user","content":"keep going"}]}"#;
@@ -128,7 +146,7 @@ fn killing_a_worker_mid_generation_fails_the_request_cleanly_and_the_cluster_rec
         }
     }
     let killed_at = Instant::now();
-    workers.remove(1); // SIGKILL worker 2 (Proc::drop)
+    workers.remove(victim as usize - 1); // SIGKILL it (Proc::drop)
     let mut ended_with_error = false;
     loop {
         line.clear();
@@ -176,13 +194,13 @@ fn killing_a_worker_mid_generation_fails_the_request_cleanly_and_the_cluster_rec
     };
     assert!(ok.contains("chat.completion"));
     eprintln!(
-        "failure reported {:.2} s after the kill; served again {:.1} s after it",
+        "worker {victim} killed: failure reported {:.2} s later; served again after {:.1} s",
         took.as_secs_f64(),
         killed_at.elapsed().as_secs_f64()
     );
     let status = get(&http, "/v1/cluster/status");
     assert!(
-        !status.contains("\"id\":2,"),
+        !status.contains(&format!("\"id\":{victim},")),
         "the dead worker is still planned: {status}"
     );
     drop(server);
